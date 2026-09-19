@@ -227,7 +227,7 @@ class App:
     def request_chrome_control(self, payload: dict[str, Any]) -> dict[str, Any]:
         prompt_id = self._prompt_id(payload.get("prompt_id"))
         action = str(payload.get("action") or "probe").strip().lower()
-        if action not in {"probe", "focus", "ensure"}:
+        if action not in {"probe", "focus", "ensure", "workflowy"}:
             raise ValueError("invalid_control_action")
         binding = self.store.prompt_binding(prompt_id)
         if action != "ensure" and (not binding or not binding.get("context_id")):
@@ -654,6 +654,12 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/prompt/text":
                 prompt_id = query.get("prompt_id", [""])[0]
                 self._json(HTTPStatus.OK, APP.prompt_text(prompt_id))
+            elif re.fullmatch(r"/api/verify/prompt/\d{6}", parsed.path):
+                from .verifier import verify_prompt
+                from .cli import request
+                prompt_id = parsed.path.rsplit("/", 1)[-1]
+                scope = query.get("scope", ["prompt"])[0]
+                self._json(HTTPStatus.OK, verify_prompt(prompt_id, request=request, full=scope == "prompt", scope=scope))
             elif parsed.path == "/api/prompts":
                 self._json(HTTPStatus.OK, {"ok": True, "bindings": APP.store.list_prompt_bindings()})
             elif parsed.path == "/api/gnome-runtime":

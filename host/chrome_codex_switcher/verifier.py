@@ -88,12 +88,16 @@ def verify_prompt(
     full: bool = False,
     timeout: float = 12.0,
     session_root: Path | None = None,
+    scope: str = "prompt",
 ) -> dict[str, Any]:
     if not PROMPT_ID_RE.fullmatch(str(prompt_id)):
         raise ValueError("invalid_prompt_id")
+    if scope not in {"prompt", "binding", "note", "overlay", "workflowy"}:
+        raise ValueError("invalid_verify_scope")
 
     result: dict[str, Any] = {
         "prompt_id": prompt_id,
+        "scope": scope,
         "result": "BLOCKED",
         "gates": {},
         "repair": [],
@@ -151,7 +155,7 @@ def verify_prompt(
         (
             gates["daemon"],
             gates["extension_runtime"]["pass"],
-            gates["a11y"],
+            gates["a11y"] or scope in {"binding", "workflowy"},
         )
     ):
         result["blocker"] = "runtime_health_failed"
@@ -245,7 +249,14 @@ def verify_prompt(
         result["blocker"] = f"chrome_probe_failed:{chrome_probe.get('error')}"
         return result
 
-    if not full:
+    if scope == "workflowy":
+        workflowy = control("workflowy")
+        gates["workflowy"] = bool(workflowy.get("ok") and workflowy.get("prompt_id") == prompt_id and workflowy.get("action_present"))
+        result["result"] = "PASS" if gates["workflowy"] else "BLOCKED"
+        result["blocker"] = None if gates["workflowy"] else f"workflowy_action_missing:{workflowy.get('error')}"
+        return result
+
+    if scope == "binding" or (not full and scope == "prompt"):
         result["result"] = "PASS"
         result["blocker"] = None
         result["binding"] = binding
@@ -287,6 +298,7 @@ def verify_prompt(
             "chrome_note",
         )
 
+    failure = None
     try:
         opened = call("/api/prompt/open-codex", {"prompt_id": prompt_id})
         if not opened.get("ok"):
@@ -321,6 +333,16 @@ def verify_prompt(
             )
             if not merged.get("ok"):
                 raise RuntimeError("temporary_shared_mode_failed")
+
+        if scope == "overlay":
+            # The overlay can be checked without touching either note.
+            chrome_focus = control("focus")
+            gates["codex_to_chrome"] = bool(chrome_focus.get("ok") and chrome_focus.get("active") and chrome_focus.get("context_id") == context_id)
+            if not gates["codex_to_chrome"]:
+                raise RuntimeError(f"chrome_focus_failed:{chrome_focus.get('error')}")
+            result["result"] = "PASS"
+            result["blocker"] = None
+            return result
 
         token = f"{int(time.time() * 1000)}-{os.getpid()}"
         chrome_marker = f"__ccs_verify_{prompt_id}_chrome_{token}__"
@@ -373,10 +395,10 @@ def verify_prompt(
             raise RuntimeError(f"chrome_focus_failed:{chrome_focus.get('error')}")
 
     except Exception as exc:
-        result["blocker"] = str(exc)
-        return result
+        failure = str(exc)
     finally:
-        try:
+        if scope != "overlay":
+          try:
             call(
                 "/api/note",
                 {"context_id": context_id, "note": original["note"], "surface": "chrome"},
@@ -409,10 +431,15 @@ def verify_prompt(
                         "note": original["note"],
                     },
                 )
-        except Exception as restore_exc:
+            restored = call(f"/api/context?context_id={context_id}").get("context")
+            gates["note_restore"] = bool(
+                isinstance(restored, dict)
+                and restored.get("note") == original["note"]
+                and restored.get("codex_note") == original["codex_note"]
+                and bool(restored.get("notes_independent")) == original["independent"]
+            )
+          except Exception as restore_exc:
             gates["note_restore"] = {"pass": False, "error": str(restore_exc)}
-        else:
-            gates["note_restore"] = True
 
     required = (
         gates.get("daemon"),
@@ -429,7 +456,7 @@ def verify_prompt(
         gates.get("codex_to_chrome"),
         gates.get("note_restore") is True,
     )
-    result["result"] = "PASS" if all(required) else "BLOCKED"
-    result["blocker"] = None if result["result"] == "PASS" else "one_or_more_gates_failed"
+    result["result"] = "PASS" if all(required) and failure is None else "BLOCKED"
+    result["blocker"] = None if result["result"] == "PASS" else (failure or "one_or_more_gates_failed")
     result["binding"] = binding
     return result

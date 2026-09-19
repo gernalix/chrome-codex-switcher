@@ -178,6 +178,15 @@
   new ResizeObserver(() => { if (context && host.style.display !== "none") saveUi(); }).observe(box);
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type === "controlWorkflowy") {
+      const expected = `/ui/prompt/${message.promptId}/verify`;
+      const action = [...document.querySelectorAll('a[href]')].some(anchor => {
+        try { const url = new URL(anchor.href); return url.origin === "http://127.0.0.1:43817" && url.pathname === expected; }
+        catch { return false; }
+      });
+      sendResponse({ok: true, prompt_id: message.promptId, action_present: action});
+      return;
+    }
     if (message.type === "controlProbe") {
       sendResponse({
         ok: true,
@@ -213,7 +222,7 @@
       let url;
       try { url = new URL(anchor.href); } catch { return; }
       if (url.origin !== "http://127.0.0.1:43817") return;
-      const match = url.pathname.match(/^\/ui\/prompt\/(\d{6})\/(copy|launch|chrome|codex)$/);
+      const match = url.pathname.match(/^\/ui\/prompt\/(\d{6})\/(copy|launch|chrome|codex|verify)$/);
       if (!match) return;
       event.preventDefault();
       event.stopPropagation();
@@ -231,6 +240,17 @@
         } else if (action === "codex") {
           const result = await send({type: "prompt:codex", promptId});
           if (!result?.ok) throw new Error(result?.error || "Codex chat unavailable");
+        } else if (action === "verify") {
+          const result = await send({type: "prompt:verify", promptId});
+          const label = result?.result === "PASS" ? "✅ Runtime verified" : `❌ Runtime failed: ${result?.blocker || result?.error || "unknown"}`;
+          flash(label, 8000);
+          let status = anchor.nextElementSibling;
+          if (!status?.classList?.contains("context-twin-verify-status")) {
+            status = document.createElement("span");
+            status.className = "context-twin-verify-status";
+            anchor.insertAdjacentElement("afterend", status);
+          }
+          status.textContent = ` ${label}`;
         }
       } catch (error) {
         flash(`Prompt action failed: ${String(error?.message || error)}`, 3500);

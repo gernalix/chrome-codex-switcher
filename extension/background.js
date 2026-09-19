@@ -254,6 +254,16 @@ async function findContextTab(payload) {
 
 async function controlChrome(payload) {
   const action = payload.action || "probe";
+  if (action === "workflowy") {
+    const tabs = await chrome.tabs.query({url: ["https://workflowy.com/*", "https://*.workflowy.com/*"]});
+    for (const tab of tabs) {
+      try {
+        const observed = await chrome.tabs.sendMessage(tab.id, {type: "controlWorkflowy", promptId: payload.prompt_id});
+        if (observed?.action_present) return {ok: true, ...observed};
+      } catch {}
+    }
+    return {ok: false, error: "workflowy_action_not_rendered", prompt_id: payload.prompt_id, action_present: false};
+  }
   let binding = await promptBinding(payload.prompt_id);
 
   if (action === "ensure" && (!binding?.ok || !binding.binding?.context_id)) {
@@ -431,6 +441,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(await focusPrompt(message.promptId, sender.tab || await currentTab(), {create: false, arm: false}));
       } else if (message.type === "prompt:codex") {
         sendResponse(await openPromptCodex(message.promptId));
+      } else if (message.type === "prompt:verify") {
+        sendResponse(await api(`/api/verify/prompt/${encodeURIComponent(message.promptId)}`, {timeoutMs: 90000}));
       } else {
         sendResponse({ok: false, error: "unknown_message"});
       }
