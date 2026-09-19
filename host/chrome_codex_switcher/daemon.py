@@ -140,6 +140,13 @@ class App:
         context_id = str(payload.get("context_id") or "").strip() or None
         if context_id:
             self.bind_prompt(payload)
+        else:
+            existing = self.store.prompt_binding(prompt_id)
+            context_id = (
+                str(existing.get("context_id"))
+                if existing and existing.get("context_id")
+                else None
+            )
         pending = {
             "prompt_id": prompt_id,
             "context_id": context_id,
