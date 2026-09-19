@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chrome ↔ Codex Switcher",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Pair Chrome tabs with exact Codex Desktop threads, with persistent floating notes.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0PzARKWnZFbCGGSkrczz1vzr5ObiJAks4ShXFGlNZOdHAerx8uU1qpQmwVQOnAS/xwUiCHHfDK5jbpelH0fxMctlLTJCmRNFaXG/Ozu9sYozmFZFdetS5IfEKkB6LS3JX9SUwtGhn0vaqYyKp5oTM5SYG08fz2h894QR1zdKQQnHSuKf367ylQ4TgGQ6sr7RnYmmz9NnH0inmP6HCZoiXS86X7Qefd5o9XU6USg2uLdnEL4eLhAajUMhvfvaPEaf/7OCM707Azwed+QBD+J32E6ocBUN+/dWGN1YZUfsgmSzQugz2uy/N1gRDW/4tm0cY8QoOPp2ofpd0pgFGfoXXQIDAQAB",
   "permissions": [
