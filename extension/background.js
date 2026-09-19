@@ -231,7 +231,7 @@ async function openPromptCodex(promptId) {
 async function processEvent(event) {
   if (event.type === "focus_chrome") {
     await focusContext(event.payload);
-  } else if (event.type === "linked" || event.type === "unlinked") {
+  } else if (["linked", "unlinked", "note_changed", "note_mode_changed"].includes(event.type)) {
     const tabs = await chrome.tabs.query({});
     const map = await readTabMap();
     for (const tab of tabs) {
@@ -290,7 +290,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const tab = sender.tab || await currentTab();
         sendResponse({ok: true, context: await ensureContext(tab)});
       } else if (message.type === "context:note") {
-        sendResponse(await api("/api/note", {method: "POST", body: {context_id: message.contextId, note: message.note}}));
+        sendResponse(await api("/api/note", {method: "POST", body: {
+          context_id: message.contextId,
+          note: message.note,
+          surface: message.surface || "chrome"
+        }}));
+      } else if (message.type === "context:note-mode") {
+        sendResponse(await api("/api/note-mode", {method: "POST", body: {
+          context_id: message.contextId,
+          independent: !!message.independent,
+          source: message.source || "chrome",
+          note: message.note
+        }}));
       } else if (message.type === "context:ui") {
         sendResponse(await api("/api/ui", {method: "POST", body: {context_id: message.contextId, ...message.ui}}));
       } else if (message.type === "context:arm") {
