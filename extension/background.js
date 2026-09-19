@@ -1,5 +1,4 @@
 const BASE = "http://127.0.0.1:43817";
-const WORKFLOWY_BRIDGE = "http://127.0.0.1:8765";
 const MAP_KEY = "tabContexts";
 let eventLoopRunning = false;
 let eventSeq = 0;
@@ -30,6 +29,15 @@ async function api(path, options = {}) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function heartbeat() {
+  try {
+    await api("/api/extension-heartbeat", {
+      method: "POST",
+      body: {version: chrome.runtime.getManifest().version}
+    });
+  } catch {}
 }
 
 async function readTabMap() {
@@ -78,10 +86,8 @@ async function currentTab() {
 }
 
 async function promptText(promptId) {
-  const response = await fetch(`${WORKFLOWY_BRIDGE}/roadmap/prompt/${encodeURIComponent(promptId)}`, {cache: "no-store"});
-  if (!response.ok) throw new Error(`roadmap_prompt_http_${response.status}`);
-  const data = await response.json();
-  if (!data?.prompt_text) throw new Error(data?.error || "prompt_text_missing");
+  const data = await api(`/api/prompt/text?prompt_id=${encodeURIComponent(promptId)}`);
+  if (!data?.ok || !data?.prompt_text) throw new Error(data?.error || "prompt_text_missing");
   return data.prompt_text;
 }
 
@@ -239,6 +245,7 @@ async function processEvent(event) {
 async function runEventLoop() {
   if (eventLoopRunning) return;
   eventLoopRunning = true;
+  await heartbeat();
   try {
     const saved = await chrome.storage.local.get("eventSeq");
     eventSeq = Number(saved.eventSeq || 0);
@@ -261,7 +268,8 @@ async function runEventLoop() {
 chrome.runtime.onInstalled.addListener(async () => {
   try { await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick: true}); } catch {}
   chrome.alarms.create("bridge-keepalive", {periodInMinutes: 0.5});
-  runEventLoop();
+  heartbeat();
+runEventLoop();
 });
 chrome.runtime.onStartup.addListener(() => runEventLoop());
 chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === "bridge-keepalive") runEventLoop(); });

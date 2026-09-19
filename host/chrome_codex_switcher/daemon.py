@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from urllib.request import urlopen
 
 from .broker import EventBroker
 from .store import Store
@@ -108,6 +109,7 @@ class App:
             "clipboard_watch": bool(self._clipboard_process and self._clipboard_process.poll() is None),
             "xfixes_watch": bool(self._xfixes_watch and self._xfixes_watch.active),
             "auto_switch_on_codex_copy": bool(self.settings.get("auto_switch_on_codex_copy", True)),
+            "extension_runtime": self.store.get_meta("extension_runtime"),
         }
 
 
@@ -117,6 +119,21 @@ class App:
         if not PROMPT_ID_RE.fullmatch(prompt_id):
             raise ValueError("invalid_prompt_id")
         return prompt_id
+
+    def prompt_text(self, prompt_id: str) -> dict[str, Any]:
+        prompt_id = self._prompt_id(prompt_id)
+        try:
+            with urlopen(
+                f"http://127.0.0.1:8765/roadmap/prompt/{prompt_id}",
+                timeout=1.5,
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return {"ok": False, "error": "roadmap_prompt_unavailable"}
+        text = str(payload.get("prompt_text") or "")
+        if not text:
+            return {"ok": False, "error": "prompt_text_missing"}
+        return {"ok": True, "prompt_id": prompt_id, "prompt_text": text}
 
     def prompt_binding(self, prompt_id: str) -> dict[str, Any]:
         prompt_id = self._prompt_id(prompt_id)
@@ -297,6 +314,14 @@ class App:
         self.broker.emit("unlinked", {"context_id": context_id})
         return {"ok": True}
 
+    def extension_heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
+        state = {
+            "version": str(payload.get("version") or ""),
+            "seen_at": now(),
+        }
+        self.store.set_meta("extension_runtime", state)
+        return {"ok": True, "extension_runtime": state}
+
     def set_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         allowed = {"auto_switch_on_codex_copy"}
         for key in allowed:
@@ -400,6 +425,9 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/prompt":
                 prompt_id = query.get("prompt_id", [""])[0]
                 self._json(HTTPStatus.OK, APP.prompt_binding(prompt_id))
+            elif parsed.path == "/api/prompt/text":
+                prompt_id = query.get("prompt_id", [""])[0]
+                self._json(HTTPStatus.OK, APP.prompt_text(prompt_id))
             elif parsed.path == "/api/prompts":
                 self._json(HTTPStatus.OK, {"ok": True, "bindings": APP.store.list_prompt_bindings()})
             elif parsed.path == "/api/events":
@@ -439,6 +467,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, APP.unlink(str(payload["context_id"])))
             elif parsed.path == "/api/settings":
                 self._json(HTTPStatus.OK, APP.set_settings(payload))
+            elif parsed.path == "/api/extension-heartbeat":
+                self._json(HTTPStatus.OK, APP.extension_heartbeat(payload))
             elif parsed.path == "/api/prompt/bind":
                 self._json(HTTPStatus.OK, APP.bind_prompt(payload))
             elif parsed.path == "/api/prompt/arm":
