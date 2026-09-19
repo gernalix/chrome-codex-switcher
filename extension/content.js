@@ -213,7 +213,7 @@
       let url;
       try { url = new URL(anchor.href); } catch { return; }
       if (url.origin !== "http://127.0.0.1:43817") return;
-      const match = url.pathname.match(/^\/ui\/prompt\/(\d{6})\/(copy|launch|chrome|codex)$/);
+      const match = url.pathname.match(/^\/ui\/prompt\/(\d{6})\/(copy|launch|chrome|codex|verify)$/);
       if (!match) return;
       event.preventDefault();
       event.stopPropagation();
@@ -231,6 +231,16 @@
         } else if (action === "codex") {
           const result = await send({type: "prompt:codex", promptId});
           if (!result?.ok) throw new Error(result?.error || "Codex chat unavailable");
+        } else if (action === "verify") {
+          const result = await send({type: "prompt:verify", promptId});
+          if (result?.result === "PASS") {
+            anchor.textContent = "✅ Runtime verified";
+            flash("Runtime verified", 3500);
+          } else {
+            const reason = result?.error || "runtime verification failed";
+            anchor.textContent = `❌ Runtime failed: ${reason}`;
+            flash(`Runtime failed: ${reason}`, 4500);
+          }
         }
       } catch (error) {
         flash(`Prompt action failed: ${String(error?.message || error)}`, 3500);
