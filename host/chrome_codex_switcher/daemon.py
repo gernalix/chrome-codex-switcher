@@ -317,14 +317,17 @@ class App:
             "overlay_consistent": overlay_consistent,
         }
         passed = all(checks.values())
+        blocker = None if passed else "runtime_snapshot_incomplete"
         return {
             "ok": passed,
             "result": "PASS" if passed else "BLOCKED",
             "prompt_id": prompt_id,
             "checks": checks,
+            "gates": checks,
             "binding": binding,
             "overlay": overlay,
-            "error": None if passed else "runtime_snapshot_incomplete",
+            "error": blocker,
+            "blocker": blocker,
         }
 
     @staticmethod
