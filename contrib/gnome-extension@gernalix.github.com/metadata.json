@@ -1,7 +1,10 @@
 {
   "uuid": "chrome-codex-switcher@gernalix.github.com",
   "name": "Chrome Codex Switcher Overlay",
-  "description": "Shows the current Context Twin note over Codex Desktop and bridges copied Codex deep links through the GNOME Shell clipboard.",
-  "shell-version": ["49", "50"],
-  "version": 2
+  "description": "Shows and edits the current Context Twin note over Codex Desktop, supports optional separate Chrome/Codex notes, and bridges copied Codex deep links.",
+  "shell-version": [
+    "49",
+    "50"
+  ],
+  "version": 3
 }
