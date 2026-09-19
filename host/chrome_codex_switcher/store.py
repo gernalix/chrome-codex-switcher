@@ -206,6 +206,43 @@ class Store:
         return result
 
 
+    @staticmethod
+    def _normalize_codex_title(title: str) -> str:
+        return " ".join(str(title or "").split()).casefold()
+
+    def remember_codex_title(self, thread: str, title: str) -> None:
+        clean = " ".join(str(title or "").split()).strip()
+        if not thread or not clean:
+            return
+        mapping = self.get_meta("codex_ui_titles", {})
+        if not isinstance(mapping, dict):
+            mapping = {}
+        mapping[str(thread)] = clean
+        self.set_meta("codex_ui_titles", mapping)
+
+    def codex_title_for_thread(self, thread: str) -> str | None:
+        mapping = self.get_meta("codex_ui_titles", {})
+        if not isinstance(mapping, dict):
+            return None
+        title = mapping.get(str(thread))
+        return str(title) if title else None
+
+    def thread_by_codex_title(self, title: str) -> str | None:
+        wanted = self._normalize_codex_title(title)
+        if not wanted:
+            return None
+        mapping = self.get_meta("codex_ui_titles", {})
+        if not isinstance(mapping, dict):
+            return None
+        matches = [
+            str(thread)
+            for thread, saved_title in mapping.items()
+            if self._normalize_codex_title(str(saved_title or "")) == wanted
+        ]
+        # Duplicate chat titles are inherently ambiguous: never guess.
+        return matches[0] if len(matches) == 1 else None
+
+
     def bind_prompt(
         self,
         prompt_id: str,
