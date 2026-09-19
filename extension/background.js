@@ -192,7 +192,7 @@ async function focusContext(payload, preferredWindowId = null) {
 async function focusPrompt(promptId, sourceTab, {create = true, arm = false} = {}) {
   const known = await promptBinding(promptId);
   if (known?.ok && known.binding?.context_id && known.binding?.url) {
-    if (arm) {
+    if (arm && !known.binding?.codex_deep_link) {
       const armed = await api("/api/prompt/arm", {
         method: "POST",
         body: {
@@ -237,113 +237,20 @@ async function openPromptCodex(promptId) {
   });
 }
 
-async function findContextTab(payload) {
-  const map = await readTabMap();
-  for (const [tabId, value] of Object.entries(map)) {
-    if (value.contextId !== payload.context_id) continue;
-    try {
-      const tab = await chrome.tabs.get(Number(tabId));
-      const current = canonicalUrl(tab?.url || tab?.pendingUrl || "");
-      const saved = canonicalUrl(value.url || payload.url || "");
-      const openedChat = saved === "https://chatgpt.com/" && /^https:\/\/chatgpt\.com\/(?:c\/|g\/)/.test(current);
-      if (tab && (current === saved || openedChat)) return tab;
-    } catch {}
-  }
-  return null;
-}
-
-async function controlChrome(payload) {
-  const action = payload.action || "probe";
-  if (action === "workflowy") {
-    const tabs = await chrome.tabs.query({url: ["https://workflowy.com/*", "https://*.workflowy.com/*"]});
-    for (const tab of tabs) {
-      try {
-        const observed = await chrome.tabs.sendMessage(tab.id, {type: "controlWorkflowy", promptId: payload.prompt_id});
-        if (observed?.action_present) return {ok: true, ...observed};
-      } catch {}
-    }
-    return {ok: false, error: "workflowy_action_not_rendered", prompt_id: payload.prompt_id, action_present: false};
-  }
-  let binding = await promptBinding(payload.prompt_id);
-
-  if (action === "ensure" && (!binding?.ok || !binding.binding?.context_id)) {
-    const ensured = await focusPrompt(payload.prompt_id, await currentTab(), {create: true, arm: false});
-    if (!ensured?.ok) return {ok: false, error: ensured?.error || "ensure_context_failed"};
-    binding = await promptBinding(payload.prompt_id);
-  }
-
-  if (!binding?.ok || !binding.binding?.context_id || !binding.binding?.url) {
-    return {ok: false, error: "chrome_context_missing"};
-  }
-
-  const contextPayload = {
-    context_id: binding.binding.context_id,
-    url: binding.binding.url,
-    title: binding.binding.title || ""
-  };
-  if (action === "focus" || action === "ensure") {
-    await focusContext(contextPayload);
-  }
-
-  const tab = await findContextTab(contextPayload);
-  if (!tab) return {ok: false, error: "chrome_tab_not_found", context_id: contextPayload.context_id};
-
-  let rendered = null;
-  let lastError = null;
-  const attempts = action === "ensure" ? 20 : 3;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      rendered = await chrome.tabs.sendMessage(tab.id, {type: "controlProbe"});
-      if (rendered?.ok) break;
-    } catch (error) {
-      lastError = error;
-    }
-    await new Promise(resolve => setTimeout(resolve, 250));
-  }
-  if (!rendered?.ok) {
-    return {
-      ok: false,
-      error: "chrome_content_unreachable",
-      detail: String(lastError?.message || lastError || "no_probe_response"),
-      context_id: contextPayload.context_id,
-      tab_id: tab.id
-    };
-  }
-
-  const [active] = await chrome.tabs.query({active: true, windowId: tab.windowId});
-  return {
-    ok: !!rendered?.ok,
-    context_id: contextPayload.context_id,
-    tab_id: tab.id,
-    window_id: tab.windowId,
-    url: canonicalUrl(tab.url || tab.pendingUrl || ""),
-    active: active?.id === tab.id,
-    rendered
-  };
+async function launchPrompt(promptId, sourceTab) {
+  const chromeSide = await focusPrompt(promptId, sourceTab, {create: true, arm: true});
+  if (!chromeSide?.ok) return chromeSide;
+  const codexSide = await api("/api/prompt/launch-codex", {
+    method: "POST",
+    body: {prompt_id: promptId}
+  });
+  if (!codexSide?.ok) return {ok: false, error: codexSide?.error || "codex_launch_failed", chrome: chromeSide, codex: codexSide};
+  return {ok: true, chrome: chromeSide, codex: codexSide};
 }
 
 async function processEvent(event) {
   if (event.type === "focus_chrome") {
     await focusContext(event.payload);
-  } else if (event.type === "control_chrome") {
-    let result;
-    try {
-      result = await controlChrome(event.payload);
-    } catch (error) {
-      result = {ok: false, error: String(error?.message || error)};
-    }
-    try {
-      await api("/api/control-ack", {
-        method: "POST",
-        body: {
-          request_id: event.payload.request_id,
-          surface: "chrome",
-          prompt_id: event.payload.prompt_id,
-          action: event.payload.action,
-          ...result
-        }
-      });
-    } catch {}
   } else if (["linked", "unlinked", "note_changed", "note_mode_changed"].includes(event.type)) {
     const tabs = await chrome.tabs.query({});
     const map = await readTabMap();
@@ -436,13 +343,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === "prompt:text") {
         sendResponse({ok: true, promptText: await promptText(message.promptId)});
       } else if (message.type === "prompt:launch") {
-        sendResponse(await focusPrompt(message.promptId, sender.tab || await currentTab(), {create: true, arm: true}));
+        sendResponse(await launchPrompt(message.promptId, sender.tab || await currentTab()));
       } else if (message.type === "prompt:focus") {
         sendResponse(await focusPrompt(message.promptId, sender.tab || await currentTab(), {create: false, arm: false}));
       } else if (message.type === "prompt:codex") {
         sendResponse(await openPromptCodex(message.promptId));
-      } else if (message.type === "prompt:verify") {
-        sendResponse(await api(`/api/verify/prompt/${encodeURIComponent(message.promptId)}`, {timeoutMs: 90000}));
       } else {
         sendResponse({ok: false, error: "unknown_message"});
       }
