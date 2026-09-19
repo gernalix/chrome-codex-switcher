@@ -113,7 +113,7 @@ async function focusContext(payload) {
     if (value.contextId !== payload.context_id) continue;
     try {
       const tab = await chrome.tabs.get(Number(tabId));
-      if (tab) { target = tab; break; }
+      if (tab && canonicalUrl(tab.url || "") === canonicalUrl(payload.url)) { target = tab; break; }
     } catch {}
   }
 
