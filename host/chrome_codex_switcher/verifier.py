@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -197,6 +198,9 @@ def verify_note(
         "prompt_id": prompt_id,
         "result": "PASS" if passed else "BLOCKED",
         "mode": "split" if independent else "shared",
+        "chrome_note_sha256": hashlib.sha256(chrome_note.encode("utf-8")).hexdigest(),
+        "codex_note_sha256": hashlib.sha256(codex_note.encode("utf-8")).hexdigest(),
+        "updated_at": context.get("updated_at"),
         "checks": {
             "stored_consistent": stored_consistent,
             "chrome_rendered": chrome_rendered,
@@ -298,6 +302,21 @@ def self_test(
         workflowy_bridge = False
     contexts = _api_call(request, "/api/list")
     events = _api_call(request, "/api/events?after=0&timeout=0")
+    bindings_response = _api_call(request, "/api/prompts")
+    bindings = bindings_response.get("bindings") if bindings_response.get("ok") else []
+    prompt_proxy = False
+    if isinstance(bindings, list):
+        prompt_id = next(
+            (
+                str(row.get("prompt_id"))
+                for row in bindings
+                if isinstance(row, dict) and PROMPT_ID_RE.fullmatch(str(row.get("prompt_id") or ""))
+            ),
+            None,
+        )
+        if prompt_id:
+            proxy = _api_call(request, f"/api/prompt/text?prompt_id={prompt_id}")
+            prompt_proxy = bool(proxy.get("ok") and proxy.get("prompt_text"))
     gates = {
         "daemon": bool(health.get("ok")),
         "extension_heartbeat": extension_fresh,
@@ -309,6 +328,7 @@ def self_test(
         "localhost_api": bool(health.get("ok")),
         "sqlite": bool(contexts.get("ok")),
         "workflowy_bridge": workflowy_bridge,
+        "prompt_proxy": prompt_proxy,
         "overlay_cache": overlay_path().exists(),
         "event_broker": bool(events.get("ok")),
     }
