@@ -1,3 +1,6 @@
+import json
+import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,8 +29,15 @@ class AppTests(unittest.TestCase):
         self.open_codex = Mock()
         self.app = App(self.store, self.broker, self.open_codex)
         self.context = {"context_id": "ctx-1", "url": "https://chatgpt.com/c/abc", "title": "Chat A"}
+        self._old_overlay_path = os.environ.get("CCS_OVERLAY_PATH")
+        self.overlay_path = Path(self.tmp.name) / "overlay.json"
+        os.environ["CCS_OVERLAY_PATH"] = str(self.overlay_path)
 
     def tearDown(self):
+        if self._old_overlay_path is None:
+            os.environ.pop("CCS_OVERLAY_PATH", None)
+        else:
+            os.environ["CCS_OVERLAY_PATH"] = self._old_overlay_path
         self.tmp.cleanup()
 
     def test_pair_then_switch_both_directions(self):
@@ -99,7 +109,94 @@ class AppTests(unittest.TestCase):
         self.app.upsert_context(self.context)
         result = self.app.set_note({"context_id": "ctx-1", "note": "Fix PersonalHub"})
         self.assertTrue(result["ok"])
-        self.assertEqual(self.store.get_context("ctx-1")["note"], "Fix PersonalHub")
+        context = self.store.get_context("ctx-1")
+        self.assertEqual(context["note"], "Fix PersonalHub")
+        self.assertEqual(context["codex_note"], "Fix PersonalHub")
+        self.assertFalse(context["notes_independent"])
+
+    def test_notes_can_split_and_merge_from_either_surface(self):
+        self.app.upsert_context(self.context)
+        self.app.set_note({"context_id": "ctx-1", "note": "shared", "surface": "chrome"})
+        enabled = self.app.set_note_mode({
+            "context_id": "ctx-1",
+            "independent": True,
+            "source": "chrome",
+            "note": "shared",
+        })
+        self.assertTrue(enabled["context"]["notes_independent"])
+
+        self.app.set_note({"context_id": "ctx-1", "note": "codex only", "surface": "codex"})
+        self.app.set_note({"context_id": "ctx-1", "note": "chrome only", "surface": "chrome"})
+        context = self.store.get_context("ctx-1")
+        self.assertEqual(context["note"], "chrome only")
+        self.assertEqual(context["codex_note"], "codex only")
+
+        merged = self.app.set_note_mode({
+            "context_id": "ctx-1",
+            "independent": False,
+            "source": "codex",
+            "note": "codex only",
+        })
+        self.assertFalse(merged["context"]["notes_independent"])
+        self.assertEqual(merged["context"]["note"], "codex only")
+        self.assertEqual(merged["context"]["codex_note"], "codex only")
+
+    def test_accessible_title_resolves_thread_and_hides_stale_overlay(self):
+        self.app.arm_link(self.context)
+        unknown = self.app.handle_codex_ui_state(True, "Indaga logout Fedora e profilo")
+        self.assertEqual(unknown["action"], "overlay_hidden")
+        state = json.loads(self.overlay_path.read_text(encoding="utf-8"))
+        self.assertFalse(state["visible"])
+
+        linked = self.app.handle_clipboard(
+            "codex://threads/thread-1",
+            codex_title="Indaga logout Fedora e profilo",
+        )
+        self.assertEqual(linked["action"], "linked")
+        self.assertEqual(
+            self.store.thread_by_codex_title("Indaga logout Fedora e profilo"),
+            "thread-1",
+        )
+
+        resolved = self.app.handle_codex_ui_state(True, "Indaga logout Fedora e profilo")
+        self.assertEqual(resolved["action"], "active_thread_resolved")
+        state = json.loads(self.overlay_path.read_text(encoding="utf-8"))
+        self.assertTrue(state["visible"])
+        self.assertEqual(state["codex_thread"], "thread-1")
+
+        stale = self.app.handle_codex_ui_state(True, "Another Codex chat")
+        self.assertEqual(stale["action"], "overlay_hidden")
+        state = json.loads(self.overlay_path.read_text(encoding="utf-8"))
+        self.assertFalse(state["visible"])
+        self.assertEqual(state["reason"], "active_thread_unmapped")
+
+    def test_store_migrates_existing_note_column_without_data_loss(self):
+        legacy_path = Path(self.tmp.name) / "legacy.sqlite3"
+        with sqlite3.connect(legacy_path) as db:
+            db.executescript(
+                """
+                CREATE TABLE contexts (
+                    id TEXT PRIMARY KEY,
+                    url TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    geometry_json TEXT NOT NULL DEFAULT '{}',
+                    hidden INTEGER NOT NULL DEFAULT 0,
+                    collapsed INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                """
+            )
+            db.execute(
+                "INSERT INTO contexts(id,url,title,note,created_at,updated_at) VALUES(?,?,?,?,1,1)",
+                ("legacy", "https://example.test/", "Legacy", "keep me"),
+            )
+        migrated = Store(legacy_path)
+        context = migrated.get_context("legacy")
+        self.assertEqual(context["note"], "keep me")
+        self.assertEqual(context["codex_note"], "keep me")
+        self.assertFalse(context["notes_independent"])
 
 
 if __name__ == "__main__":
