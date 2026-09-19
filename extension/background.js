@@ -31,6 +31,15 @@ async function api(path, options = {}) {
   }
 }
 
+async function heartbeat() {
+  try {
+    await api("/api/extension-heartbeat", {
+      method: "POST",
+      body: {version: chrome.runtime.getManifest().version}
+    });
+  } catch {}
+}
+
 async function readTabMap() {
   return (await chrome.storage.local.get(MAP_KEY))[MAP_KEY] || {};
 }
@@ -236,6 +245,7 @@ async function processEvent(event) {
 async function runEventLoop() {
   if (eventLoopRunning) return;
   eventLoopRunning = true;
+  await heartbeat();
   try {
     const saved = await chrome.storage.local.get("eventSeq");
     eventSeq = Number(saved.eventSeq || 0);
@@ -258,7 +268,8 @@ async function runEventLoop() {
 chrome.runtime.onInstalled.addListener(async () => {
   try { await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick: true}); } catch {}
   chrome.alarms.create("bridge-keepalive", {periodInMinutes: 0.5});
-  runEventLoop();
+  heartbeat();
+runEventLoop();
 });
 chrome.runtime.onStartup.addListener(() => runEventLoop());
 chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === "bridge-keepalive") runEventLoop(); });
