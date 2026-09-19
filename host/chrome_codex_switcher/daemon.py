@@ -182,7 +182,7 @@ class App:
             }
         return {
             "ok": True,
-            "version": "0.3.0",
+            "version": "0.4.0",
             "host": HOST,
             "port": PORT,
             "clipboard_watch": bool(self._clipboard_process and self._clipboard_process.poll() is None),
