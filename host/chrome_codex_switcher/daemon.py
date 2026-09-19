@@ -109,6 +109,7 @@ class App:
             "clipboard_watch": bool(self._clipboard_process and self._clipboard_process.poll() is None),
             "xfixes_watch": bool(self._xfixes_watch and self._xfixes_watch.active),
             "auto_switch_on_codex_copy": bool(self.settings.get("auto_switch_on_codex_copy", True)),
+            "extension_runtime": self.store.get_meta("extension_runtime"),
         }
 
 
@@ -313,6 +314,14 @@ class App:
         self.broker.emit("unlinked", {"context_id": context_id})
         return {"ok": True}
 
+    def extension_heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
+        state = {
+            "version": str(payload.get("version") or ""),
+            "seen_at": now(),
+        }
+        self.store.set_meta("extension_runtime", state)
+        return {"ok": True, "extension_runtime": state}
+
     def set_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         allowed = {"auto_switch_on_codex_copy"}
         for key in allowed:
@@ -458,6 +467,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, APP.unlink(str(payload["context_id"])))
             elif parsed.path == "/api/settings":
                 self._json(HTTPStatus.OK, APP.set_settings(payload))
+            elif parsed.path == "/api/extension-heartbeat":
+                self._json(HTTPStatus.OK, APP.extension_heartbeat(payload))
             elif parsed.path == "/api/prompt/bind":
                 self._json(HTTPStatus.OK, APP.bind_prompt(payload))
             elif parsed.path == "/api/prompt/arm":
