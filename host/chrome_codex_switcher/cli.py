@@ -11,7 +11,14 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .util import overlay_path
-from .verifier import verify_prompt
+from .verifier import (
+    self_test,
+    verify_binding,
+    verify_note,
+    verify_overlay,
+    verify_prompt,
+    verify_workflowy,
+)
 
 PORT = int(os.environ.get("CCS_PORT", "43817"))
 BASE = f"http://127.0.0.1:{PORT}"
@@ -106,6 +113,31 @@ def cmd_auto_switch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_check(result: dict) -> int:
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result.get("result") == "PASS" else 2
+
+
+def cmd_verify_binding(args: argparse.Namespace) -> int:
+    return _print_check(verify_binding(args.prompt_id, request=request))
+
+
+def cmd_verify_note(args: argparse.Namespace) -> int:
+    return _print_check(verify_note(args.prompt_id, request=request, timeout=args.timeout))
+
+
+def cmd_verify_overlay(_args: argparse.Namespace) -> int:
+    return _print_check(verify_overlay(request=request))
+
+
+def cmd_verify_workflowy(args: argparse.Namespace) -> int:
+    return _print_check(verify_workflowy(args.prompt_id, request=request))
+
+
+def cmd_self_test(_args: argparse.Namespace) -> int:
+    return _print_check(self_test(request=request))
+
+
 def cmd_verify_prompt(args: argparse.Namespace) -> int:
     result = verify_prompt(
         args.prompt_id,
@@ -128,6 +160,25 @@ def main() -> None:
     auto = sub.add_parser("auto-switch")
     auto.add_argument("value", choices=["on", "off"])
     auto.set_defaults(func=cmd_auto_switch)
+
+    verify_binding_cmd = sub.add_parser("verify-binding", help="Verify PROMPT_ID/context/thread/deep-link consistency")
+    verify_binding_cmd.add_argument("prompt_id")
+    verify_binding_cmd.set_defaults(func=cmd_verify_binding)
+
+    verify_note_cmd = sub.add_parser("verify-note", help="Verify persisted and rendered note state")
+    verify_note_cmd.add_argument("prompt_id")
+    verify_note_cmd.add_argument("--timeout", type=float, default=8.0)
+    verify_note_cmd.set_defaults(func=cmd_verify_note)
+
+    verify_overlay_cmd = sub.add_parser("verify-overlay", help="Verify overlay/AT-SPI/GNOME runtime consistency")
+    verify_overlay_cmd.set_defaults(func=cmd_verify_overlay)
+
+    verify_workflowy_cmd = sub.add_parser("verify-workflowy", help="Verify Workflowy action/proxy availability")
+    verify_workflowy_cmd.add_argument("prompt_id")
+    verify_workflowy_cmd.set_defaults(func=cmd_verify_workflowy)
+
+    self_test_cmd = sub.add_parser("self-test", help="Run non-destructive CCS infrastructure self-test")
+    self_test_cmd.set_defaults(func=cmd_self_test)
 
     verify = sub.add_parser(
         "verify-prompt",
