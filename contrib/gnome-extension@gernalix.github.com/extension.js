@@ -33,6 +33,9 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         this._saveTimer = null;
         this._lastRuntimeSignature = null;
         this._lastRuntimeReportAt = 0;
+        this._runtimeReportInFlight = false;
+        this._runtimeReportFailures = 0;
+        this._runtimeReportBackoffUntil = 0;
 
         this._box = new St.BoxLayout({
             vertical: true,
@@ -101,10 +104,20 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         });
 
         this._timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
-            this._refresh();
+            try {
+                this._refresh();
+            } catch (error) {
+                console.error(`Chrome Codex Switcher refresh failed: ${error}`);
+                this._box?.hide();
+            }
             return GLib.SOURCE_CONTINUE;
         });
-        this._refresh();
+        try {
+            this._refresh();
+        } catch (error) {
+            console.error(`Chrome Codex Switcher initial refresh failed: ${error}`);
+            this._box?.hide();
+        }
     }
 
     disable() {
@@ -123,6 +136,9 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         this._selection = null;
         this._clipboard = null;
         this._http = null;
+        this._runtimeReportInFlight = false;
+        this._runtimeReportFailures = 0;
+        this._runtimeReportBackoffUntil = 0;
         this._box?.destroy();
         this._box = null;
         this._note = null;
@@ -254,10 +270,24 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         };
         const signature = JSON.stringify(payload);
         const nowMs = Date.now();
+        if (this._runtimeReportInFlight || nowMs < this._runtimeReportBackoffUntil) return;
         if (signature === this._lastRuntimeSignature && nowMs - this._lastRuntimeReportAt < 1500) return;
         this._lastRuntimeSignature = signature;
         this._lastRuntimeReportAt = nowMs;
-        this._postForm('/api/gnome-heartbeat', payload);
+        this._runtimeReportInFlight = true;
+        this._postForm('/api/gnome-heartbeat', payload, ok => {
+            this._runtimeReportInFlight = false;
+            if (ok) {
+                this._runtimeReportFailures = 0;
+                this._runtimeReportBackoffUntil = 0;
+                return;
+            }
+            this._runtimeReportFailures = Math.min(6, this._runtimeReportFailures + 1);
+            this._runtimeReportBackoffUntil = Date.now() + Math.min(
+                30000,
+                500 * (2 ** this._runtimeReportFailures),
+            );
+        });
     }
 
     _refresh() {
