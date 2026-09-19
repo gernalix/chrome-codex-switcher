@@ -1,3 +1,4 @@
+import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import Soup from 'gi://Soup?version=3.0';
@@ -6,6 +7,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const DAEMON_CLIPBOARD_URL = 'http://127.0.0.1:43817/api/clipboard';
+const DAEMON_CODEX_ACTIVITY_URL = 'http://127.0.0.1:43817/api/codex-activity';
 
 function isCodexWindow(win) {
     if (!win) return false;
@@ -42,6 +44,27 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
             });
         });
 
+        // A click in Codex's left navigation may change the active thread
+        // before AT-SPI has resolved the newly selected chat. Hide the overlay
+        // immediately so the previous chat's note is never left on screen.
+        this._stageEventId = global.stage.connect('captured-event', (_actor, event) => {
+            try {
+                if (event.type() !== Clutter.EventType.BUTTON_PRESS) return Clutter.EVENT_PROPAGATE;
+                const win = global.display.focus_window;
+                if (!isCodexWindow(win)) return Clutter.EVENT_PROPAGATE;
+                const [x, y] = event.get_coords();
+                const rect = win.get_frame_rect();
+                const sidebarWidth = Math.min(460, Math.max(250, Math.floor(rect.width * 0.32)));
+                const inWindow = x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+                const inSidebar = inWindow && x <= rect.x + sidebarWidth;
+                if (inSidebar) {
+                    this._box.hide();
+                    this._signalPossibleThreadChange();
+                }
+            } catch (_) {}
+            return Clutter.EVENT_PROPAGATE;
+        });
+
         this._timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
             this._refresh();
             return GLib.SOURCE_CONTINUE;
@@ -54,6 +77,8 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         this._timer = null;
         if (this._selection && this._selectionChangedId) this._selection.disconnect(this._selectionChangedId);
         this._selectionChangedId = null;
+        if (this._stageEventId) global.stage.disconnect(this._stageEventId);
+        this._stageEventId = null;
         this._selection = null;
         this._clipboard = null;
         this._http = null;
@@ -75,6 +100,18 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         } catch (error) {
             console.debug(`chrome-codex-switcher: clipboard bridge failed: ${error}`);
         }
+    }
+
+    _signalPossibleThreadChange() {
+        try {
+            const url = DAEMON_CODEX_ACTIVITY_URL + '?kind=sidebar_pointer';
+            const message = Soup.Message.new('POST', url);
+            this._http.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null, (session, result) => {
+                try {
+                    session.send_and_read_finish(result);
+                } catch (_) {}
+            });
+        } catch (_) {}
     }
 
     _refresh() {
