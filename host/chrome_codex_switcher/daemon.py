@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
+from .a11y_watch import CodexA11yWatch
 from .broker import EventBroker
 from .store import Store
 from .util import cache_dir, canonical_url, db_path, now, overlay_path, parse_codex_link, write_json_atomic
@@ -38,9 +39,14 @@ class App:
         self._open_codex = open_codex or self._default_open_codex
         self._clipboard_process: subprocess.Popen | None = None
         self._xfixes_watch: XFixesWatch | None = None
+        self._a11y_watch: CodexA11yWatch | None = None
         self._lock = threading.Lock()
         self._last_clipboard_thread: str | None = None
         self._last_clipboard_at = 0.0
+        self._active_codex_title: str | None = None
+        self._expected_codex_thread: str | None = None
+        self._expected_previous_title: str | None = None
+        self._expected_until = 0.0
         self.settings = self.store.get_meta("settings", {"auto_switch_on_codex_copy": True})
         if "auto_switch_on_codex_copy" not in self.settings:
             self.settings["auto_switch_on_codex_copy"] = True
@@ -100,6 +106,60 @@ class App:
             except subprocess.TimeoutExpired:
                 proc.kill()
 
+    def start_active_thread_watch(self) -> None:
+        if self._a11y_watch and self._a11y_watch.active:
+            return
+        watcher = CodexA11yWatch(self.handle_codex_ui_state)
+        watcher.start()
+        self._a11y_watch = watcher
+
+    def stop_active_thread_watch(self) -> None:
+        if self._a11y_watch:
+            self._a11y_watch.stop()
+
+    @staticmethod
+    def _clean_codex_title(value: Any) -> str | None:
+        title = " ".join(str(value or "").split()).strip()
+        return title or None
+
+    def handle_codex_ui_state(self, focused: bool, title: str | None) -> dict[str, Any]:
+        if not focused:
+            return {"ok": True, "action": "codex_unfocused"}
+
+        clean = self._clean_codex_title(title)
+        if not clean:
+            self._active_codex_title = None
+            self._write_overlay_hidden("active_thread_unknown")
+            return {"ok": True, "action": "overlay_hidden", "reason": "active_thread_unknown"}
+
+        previous = self._active_codex_title
+        self._active_codex_title = clean
+        thread = self.store.thread_by_codex_title(clean)
+
+        expected = self._expected_codex_thread
+        if not thread and expected and now() <= self._expected_until:
+            before = self._expected_previous_title
+            if before is None or clean.casefold() != before.casefold():
+                self.store.remember_codex_title(expected, clean)
+                thread = expected
+
+        if thread:
+            self._expected_codex_thread = None
+            self._expected_previous_title = None
+            self._expected_until = 0.0
+            self.store.set_meta("active_codex_thread", thread)
+            self._write_overlay_for_thread(thread, codex_title=clean)
+            return {"ok": True, "action": "active_thread_resolved", "thread": thread, "title": clean}
+
+        reason = "active_thread_unmapped" if previous != clean else "active_thread_unresolved"
+        self._write_overlay_hidden(reason, codex_title=clean)
+        return {"ok": True, "action": "overlay_hidden", "reason": reason, "title": clean}
+
+    def invalidate_codex_overlay(self, reason: str = "possible_thread_change") -> dict[str, Any]:
+        self._active_codex_title = None
+        self._write_overlay_hidden(reason)
+        return {"ok": True, "action": "overlay_hidden", "reason": reason}
+
     def health(self) -> dict[str, Any]:
         return {
             "ok": True,
@@ -110,6 +170,9 @@ class App:
             "xfixes_watch": bool(self._xfixes_watch and self._xfixes_watch.active),
             "auto_switch_on_codex_copy": bool(self.settings.get("auto_switch_on_codex_copy", True)),
             "extension_runtime": self.store.get_meta("extension_runtime"),
+            "codex_a11y_watch": bool(self._a11y_watch and self._a11y_watch.active),
+            "codex_a11y_error": self._a11y_watch.error if self._a11y_watch else None,
+            "active_codex_title": self._active_codex_title,
         }
 
 
@@ -206,16 +269,23 @@ class App:
         twin = self.store.twin_by_context(context["id"])
         if not twin:
             return {"ok": False, "error": "not_linked"}
+        self._expected_codex_thread = str(twin["codex_thread"])
+        self._expected_previous_title = self._active_codex_title
+        self._expected_until = now() + 8.0
         self.store.set_meta("active_codex_thread", twin["codex_thread"])
         self._write_overlay_for_thread(twin["codex_thread"])
         self._open_codex(twin["codex_deep_link"])
         return {"ok": True, "twin": twin}
 
-    def handle_clipboard(self, text: str) -> dict[str, Any]:
+    def handle_clipboard(self, text: str, codex_title: str | None = None) -> dict[str, Any]:
         parsed = parse_codex_link(text)
         if not parsed:
             return {"ok": True, "ignored": True}
         thread, deep_link = parsed
+        ui_title = self._clean_codex_title(codex_title) or self._active_codex_title
+        if ui_title:
+            self.store.remember_codex_title(thread, ui_title)
+            self._active_codex_title = ui_title
         seen_at = now()
         with self._lock:
             if (
@@ -268,7 +338,7 @@ class App:
                 self.broker.emit("link_expired", {"context_id": pending.get("context_id")})
 
         twin = self.store.twin_by_thread(thread)
-        self._write_overlay_for_thread(thread)
+        self._write_overlay_for_thread(thread, codex_title=ui_title)
         if twin and bool(self.settings.get("auto_switch_on_codex_copy", True)):
             payload = {
                 "context_id": twin["context_id"],
@@ -292,12 +362,45 @@ class App:
         return {"ok": True, "action": "active_thread_updated", "linked": bool(twin)}
 
     def set_note(self, payload: dict[str, Any]) -> dict[str, Any]:
-        context = self.store.set_note(str(payload["context_id"]), str(payload.get("note", "")))
+        context_id = str(payload["context_id"])
+        surface = "codex" if str(payload.get("surface") or "") == "codex" else "chrome"
+        context = self.store.set_note(
+            context_id,
+            str(payload.get("note", "")),
+            surface=surface,
+        )
         if not context:
             return {"ok": False, "error": "context_not_found"}
         twin = context.get("twin")
         if twin and self.store.get_meta("active_codex_thread") == twin.get("codex_thread"):
-            self._write_overlay_for_thread(twin["codex_thread"])
+            self._write_overlay_for_thread(twin["codex_thread"], codex_title=self._active_codex_title)
+        self.broker.emit("note_changed", {"context_id": context_id, "surface": surface})
+        return {"ok": True, "context": context}
+
+    def set_note_mode(self, payload: dict[str, Any]) -> dict[str, Any]:
+        context_id = str(payload["context_id"])
+        source = "codex" if str(payload.get("source") or "") == "codex" else "chrome"
+        raw_independent = payload.get("independent")
+        independent = (
+            raw_independent
+            if isinstance(raw_independent, bool)
+            else str(raw_independent or "").strip().lower() in {"1", "true", "yes", "on"}
+        )
+        context = self.store.set_note_mode(
+            context_id,
+            independent,
+            source=source,
+            current_note=str(payload["note"]) if "note" in payload else None,
+        )
+        if not context:
+            return {"ok": False, "error": "context_not_found"}
+        twin = context.get("twin")
+        if twin and self.store.get_meta("active_codex_thread") == twin.get("codex_thread"):
+            self._write_overlay_for_thread(twin["codex_thread"], codex_title=self._active_codex_title)
+        self.broker.emit(
+            "note_mode_changed",
+            {"context_id": context_id, "independent": bool(context.get("notes_independent"))},
+        )
         return {"ok": True, "context": context}
 
     def set_ui(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -330,7 +433,26 @@ class App:
         self.store.set_meta("settings", self.settings)
         return {"ok": True, "settings": self.settings}
 
-    def _write_overlay_for_thread(self, thread: str) -> None:
+    def _write_overlay_hidden(self, reason: str, codex_title: str | None = None) -> None:
+        write_json_atomic(
+            overlay_path(),
+            {
+                "visible": False,
+                "codex_thread": None,
+                "context_id": None,
+                "title": "",
+                "note": "",
+                "chrome_note": "",
+                "codex_note": "",
+                "notes_independent": False,
+                "url": "",
+                "codex_title": codex_title or "",
+                "reason": reason,
+                "updated_at": now(),
+            },
+        )
+
+    def _write_overlay_for_thread(self, thread: str, codex_title: str | None = None) -> None:
         twin = self.store.twin_by_thread(thread)
         if twin:
             state = {
@@ -338,8 +460,17 @@ class App:
                 "codex_thread": thread,
                 "context_id": twin["context_id"],
                 "title": twin.get("title", ""),
-                "note": twin.get("note", ""),
+                "note": (
+                    twin.get("codex_note", "")
+                    if bool(twin.get("notes_independent"))
+                    else twin.get("note", "")
+                ),
+                "chrome_note": twin.get("note", ""),
+                "codex_note": twin.get("codex_note", ""),
+                "notes_independent": bool(twin.get("notes_independent")),
                 "url": twin.get("url", ""),
+                "codex_title": codex_title or self.store.codex_title_for_thread(thread) or "",
+                "reason": "",
                 "updated_at": now(),
             }
         else:
@@ -349,7 +480,12 @@ class App:
                 "context_id": None,
                 "title": "",
                 "note": "",
+                "chrome_note": "",
+                "codex_note": "",
+                "notes_independent": False,
                 "url": "",
+                "codex_title": codex_title or self.store.codex_title_for_thread(thread) or "",
+                "reason": "thread_not_linked",
                 "updated_at": now(),
             }
         write_json_atomic(overlay_path(), state)
@@ -393,6 +529,10 @@ class Handler(BaseHTTPRequestHandler):
         if length > 1_000_000:
             raise ValueError("payload_too_large")
         raw = self.rfile.read(length) if length else b"{}"
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type == "application/x-www-form-urlencoded":
+            parsed = parse_qs(raw.decode("utf-8"), keep_blank_values=True)
+            return {key: values[-1] if values else "" for key, values in parsed.items()}
         value = json.loads(raw.decode("utf-8"))
         if not isinstance(value, dict):
             raise ValueError("object_required")
@@ -452,6 +592,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"ok": True, "context": APP.upsert_context(payload)})
             elif parsed.path == "/api/note":
                 self._json(HTTPStatus.OK, APP.set_note(payload))
+            elif parsed.path == "/api/note-mode":
+                self._json(HTTPStatus.OK, APP.set_note_mode(payload))
             elif parsed.path == "/api/ui":
                 self._json(HTTPStatus.OK, APP.set_ui(payload))
             elif parsed.path == "/api/arm-link":
@@ -462,7 +604,11 @@ class Handler(BaseHTTPRequestHandler):
                 text = payload.get("text")
                 if text is None:
                     text = parse_qs(parsed.query).get("text", [""])[0]
-                self._json(HTTPStatus.OK, APP.handle_clipboard(str(text)))
+                codex_title = payload.get("codex_title")
+                self._json(HTTPStatus.OK, APP.handle_clipboard(str(text), codex_title=codex_title))
+            elif parsed.path == "/api/codex-activity":
+                kind = str(payload.get("kind") or parse_qs(parsed.query).get("kind", ["possible_thread_change"])[0])
+                self._json(HTTPStatus.OK, APP.invalidate_codex_overlay(kind))
             elif parsed.path == "/api/unlink":
                 self._json(HTTPStatus.OK, APP.unlink(str(payload["context_id"])))
             elif parsed.path == "/api/settings":
@@ -487,6 +633,7 @@ def serve() -> None:
     global APP
     APP = App()
     APP.start_clipboard_watch()
+    APP.start_active_thread_watch()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     server.daemon_threads = True
 
@@ -498,6 +645,7 @@ def serve() -> None:
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
+        APP.stop_active_thread_watch()
         APP.stop_clipboard_watch()
         server.server_close()
 

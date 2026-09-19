@@ -10,6 +10,8 @@ Fedora/Wayland workflow helper for pairing a specific Chrome tab with a specific
 - Chrome → Codex: one extension shortcut opens the exact paired Codex thread with `gio open`.
 - Codex → Chrome: press Codex Desktop's **Copy chat deep link** shortcut; on GNOME Wayland the GNOME companion observes the clipboard change inside the compositor and forwards the `codex://threads/...` value to the daemon, which focuses the exact paired Chrome tab.
 - Persists notes and pairings in SQLite.
+- Shows the note over the active Codex conversation and hides it whenever the active thread cannot be resolved safely, so a stale note is never shown over a different chat.
+- Lets the note be edited from either Chrome or Codex. By default both surfaces share one note; enable **Separate Chrome/Codex notes** to keep two independent values for the same pair.
 - Restores/focuses the right Chrome tab even with many windows/tabs; if the paired tab is closed, it reopens its URL.
 - Provides a searchable Chrome side panel for all contexts.
 - Ships a GNOME Shell companion that provides both the Codex floating-note overlay and a native GNOME Wayland clipboard bridge.
@@ -99,14 +101,15 @@ Copying a Codex deep link intentionally acts as “switch to twin” outside pai
 
 ### Floating note
 
-The Chrome note is:
+The note can be edited from both paired surfaces:
 
-- draggable;
-- resizable;
-- collapsible;
-- hideable;
-- persisted per tab-context;
-- searchable from the side panel.
+- Chrome: editable textarea, draggable/resizable/collapsible/hideable;
+- Codex: editable GNOME overlay bound to the currently resolved Codex thread;
+- default mode: one shared note, so an edit on either side appears on the other;
+- optional **Separate Chrome/Codex notes** checkbox: Chrome and Codex keep independent note text for the same pair;
+- persisted per tab-context and searchable from the Chrome side panel.
+
+When Codex changes to a conversation that cannot be resolved unambiguously, the overlay is hidden instead of reusing the previous chat's note.
 
 Use **Alt+Shift+V** to show/hide the note in the active Chrome tab.
 
@@ -139,7 +142,8 @@ The HTTP server binds only to `127.0.0.1:43817`. Mutating browser requests are a
 
 `contrib/gnome-extension@gernalix.github.com/` supports GNOME Shell 49/50. It has two jobs:
 
-- read the daemon's overlay cache and display the paired note when a Codex/ChatGPT desktop window is focused;
+- use AT-SPI to resolve the selected Codex/ChatGPT conversation and display only the matching paired note;
+- provide an editable Codex note plus the **Separate Chrome/Codex notes** toggle;
 - bridge copied Codex deep links to the daemon using GNOME Shell's native clipboard APIs.
 
 The clipboard access is deliberate and limited to values matching `codex://threads/...`; unrelated clipboard text is ignored. On GNOME Wayland this companion is the preferred Codex → Chrome backend because GNOME does not expose the wlroots data-control protocol required by `wl-paste --watch`.

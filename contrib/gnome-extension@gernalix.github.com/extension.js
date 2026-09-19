@@ -1,3 +1,4 @@
+import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import Soup from 'gi://Soup?version=3.0';
@@ -5,7 +6,9 @@ import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
-const DAEMON_CLIPBOARD_URL = 'http://127.0.0.1:43817/api/clipboard';
+const DAEMON_BASE = 'http://127.0.0.1:43817';
+const DAEMON_CLIPBOARD_URL = `${DAEMON_BASE}/api/clipboard`;
+const DAEMON_CODEX_ACTIVITY_URL = `${DAEMON_BASE}/api/codex-activity`;
 
 function isCodexWindow(win) {
     if (!win) return false;
@@ -23,12 +26,44 @@ function isCodexLink(text) {
 export default class ChromeCodexSwitcherOverlay extends Extension {
     enable() {
         this._lastFocusRequest = null;
-        this._box = new St.BoxLayout({vertical: true, style_class: 'context-twin-overlay', visible: false});
+        this._contextId = null;
+        this._notesIndependent = false;
+        this._noteDirty = false;
+        this._applyingState = false;
+        this._saveTimer = null;
+
+        this._box = new St.BoxLayout({
+            vertical: true,
+            style_class: 'context-twin-overlay',
+            visible: false,
+        });
         this._title = new St.Label({style_class: 'context-twin-title'});
-        this._note = new St.Label({style_class: 'context-twin-note'});
-        this._note.clutter_text.line_wrap = true;
+        this._note = new St.Entry({
+            style_class: 'context-twin-note',
+            can_focus: true,
+            track_hover: true,
+            hint_text: 'Context note',
+        });
+        this._noteText = this._note.clutter_text;
+        this._noteText.set_single_line_mode(false);
+        this._noteText.set_line_wrap(true);
+        this._noteText.set_editable(true);
+        this._noteText.set_selectable(true);
+        this._noteChangedId = this._noteText.connect('text-changed', () => this._onNoteChanged());
+
+        this._modeLabel = new St.Label();
+        this._mode = new St.Button({
+            style_class: 'context-twin-mode',
+            reactive: true,
+            can_focus: true,
+            child: this._modeLabel,
+        });
+        this._modeClickedId = this._mode.connect('clicked', () => this._toggleNoteMode());
+        this._updateModeLabel();
+
         this._box.add_child(this._title);
         this._box.add_child(this._note);
+        this._box.add_child(this._mode);
         Main.uiGroup.add_child(this._box);
 
         this._http = new Soup.Session();
@@ -42,6 +77,27 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
             });
         });
 
+        // A click in Codex's left navigation can change the thread before the
+        // accessibility watcher resolves the new selected chat. Hide the old
+        // overlay immediately rather than showing the previous chat's note.
+        this._stageEventId = global.stage.connect('captured-event', (_actor, event) => {
+            try {
+                if (event.type() !== Clutter.EventType.BUTTON_PRESS) return Clutter.EVENT_PROPAGATE;
+                const win = global.display.focus_window;
+                if (!isCodexWindow(win)) return Clutter.EVENT_PROPAGATE;
+                const [x, y] = event.get_coords();
+                const rect = win.get_frame_rect();
+                const sidebarWidth = Math.min(460, Math.max(250, Math.floor(rect.width * 0.32)));
+                const inWindow = x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+                const inSidebar = inWindow && x <= rect.x + sidebarWidth;
+                if (inSidebar) {
+                    this._box.hide();
+                    this._signalPossibleThreadChange();
+                }
+            } catch (_) {}
+            return Clutter.EVENT_PROPAGATE;
+        });
+
         this._timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
             this._refresh();
             return GLib.SOURCE_CONTINUE;
@@ -52,13 +108,88 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
     disable() {
         if (this._timer) GLib.source_remove(this._timer);
         this._timer = null;
+        if (this._saveTimer) GLib.source_remove(this._saveTimer);
+        this._saveTimer = null;
         if (this._selection && this._selectionChangedId) this._selection.disconnect(this._selectionChangedId);
         this._selectionChangedId = null;
+        if (this._stageEventId) global.stage.disconnect(this._stageEventId);
+        this._stageEventId = null;
+        if (this._noteText && this._noteChangedId) this._noteText.disconnect(this._noteChangedId);
+        this._noteChangedId = null;
+        if (this._mode && this._modeClickedId) this._mode.disconnect(this._modeClickedId);
+        this._modeClickedId = null;
         this._selection = null;
         this._clipboard = null;
         this._http = null;
         this._box?.destroy();
         this._box = null;
+        this._note = null;
+        this._noteText = null;
+        this._mode = null;
+        this._modeLabel = null;
+    }
+
+    _postForm(path, payload, callback = null) {
+        try {
+            const encoded = Soup.form_encode_hash(payload);
+            const message = Soup.Message.new_from_encoded_form('POST', DAEMON_BASE + path, encoded);
+            this._http.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null, (session, result) => {
+                try {
+                    session.send_and_read_finish(result);
+                    const status = Number(message.get_status());
+                    callback?.(status >= 200 && status < 300);
+                } catch (_) {
+                    callback?.(false);
+                }
+            });
+        } catch (_) {
+            callback?.(false);
+        }
+    }
+
+    _onNoteChanged() {
+        if (this._applyingState || !this._contextId) return;
+        this._noteDirty = true;
+        if (this._saveTimer) GLib.source_remove(this._saveTimer);
+        this._saveTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 280, () => {
+            this._saveTimer = null;
+            const contextId = this._contextId;
+            const note = this._noteText.get_text();
+            this._postForm('/api/note', {
+                context_id: contextId,
+                note,
+                surface: 'codex',
+            }, ok => {
+                if (ok && this._contextId === contextId) this._noteDirty = false;
+            });
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _toggleNoteMode() {
+        if (!this._contextId) return;
+        const previous = this._notesIndependent;
+        const next = !previous;
+        const contextId = this._contextId;
+        const note = this._noteText.get_text();
+        this._notesIndependent = next;
+        this._updateModeLabel();
+        this._postForm('/api/note-mode', {
+            context_id: contextId,
+            independent: next ? '1' : '0',
+            source: 'codex',
+            note,
+        }, ok => {
+            if (!ok && this._contextId === contextId) {
+                this._notesIndependent = previous;
+                this._updateModeLabel();
+            }
+        });
+    }
+
+    _updateModeLabel() {
+        if (!this._modeLabel) return;
+        this._modeLabel.text = (this._notesIndependent ? '☑ ' : '☐ ') + 'Separate Chrome/Codex notes';
     }
 
     _forwardCodexLink(text) {
@@ -77,22 +208,68 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         }
     }
 
+    _signalPossibleThreadChange() {
+        try {
+            const url = DAEMON_CODEX_ACTIVITY_URL + '?kind=sidebar_pointer';
+            const message = Soup.Message.new('POST', url);
+            this._http.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null, (session, result) => {
+                try {
+                    session.send_and_read_finish(result);
+                } catch (_) {}
+            });
+        } catch (_) {}
+    }
+
+    _applyOverlayState(state) {
+        const changedContext = this._contextId !== state.context_id;
+        if (changedContext) {
+            this._contextId = state.context_id || null;
+            this._noteDirty = false;
+        }
+
+        this._title.text = state.title || 'Context Twin';
+        this._notesIndependent = !!state.notes_independent;
+        this._updateModeLabel();
+
+        if (changedContext || !this._noteDirty) {
+            const wanted = String(state.note || '');
+            if (this._noteText.get_text() !== wanted) {
+                this._applyingState = true;
+                this._noteText.set_text(wanted);
+                this._applyingState = false;
+            }
+        }
+    }
+
     _refresh() {
         this._focusRequestedChrome();
         const win = global.display.focus_window;
-        if (!isCodexWindow(win)) { this._box.hide(); return; }
+        if (!isCodexWindow(win)) {
+            this._box.hide();
+            return;
+        }
         const path = GLib.build_filenamev([GLib.get_user_cache_dir(), 'chrome-codex-switcher', 'overlay.json']);
         try {
             const [ok, bytes] = GLib.file_get_contents(path);
-            if (!ok) { this._box.hide(); return; }
+            if (!ok) {
+                this._box.hide();
+                return;
+            }
             const state = JSON.parse(new TextDecoder().decode(bytes));
-            if (!state.visible) { this._box.hide(); return; }
-            this._title.text = state.title || 'Context Twin';
-            this._note.text = state.note || '(no note)';
+            if (!state.visible || !state.context_id) {
+                this._contextId = null;
+                this._noteDirty = false;
+                this._box.hide();
+                return;
+            }
+            this._applyOverlayState(state);
             const rect = win.get_frame_rect();
-            const width = Math.min(390, Math.max(280, Math.floor(rect.width * 0.30)));
+            const width = Math.min(430, Math.max(300, Math.floor(rect.width * 0.32)));
             this._box.set_width(width);
-            this._box.set_position(Math.max(rect.x + 12, rect.x + rect.width - width - 24), rect.y + 72);
+            this._box.set_position(
+                Math.max(rect.x + 12, rect.x + rect.width - width - 24),
+                rect.y + 72,
+            );
             this._box.show();
         } catch (_) {
             this._box.hide();
