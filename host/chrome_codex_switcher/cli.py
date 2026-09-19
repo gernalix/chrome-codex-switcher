@@ -66,7 +66,8 @@ def cmd_status(_args: argparse.Namespace) -> int:
 
     daemon_ok = bool(isinstance(result["daemon"], dict) and result["daemon"].get("ok"))
     wl_watch = bool(isinstance(result["daemon"], dict) and result["daemon"].get("clipboard_watch"))
-    result["clipboard_backend"] = "wl-paste" if wl_watch else ("gnome-shell" if gnome_bridge else None)
+    xfixes_watch = bool(isinstance(result["daemon"], dict) and result["daemon"].get("xfixes_watch"))
+    result["clipboard_backend"] = "xfixes" if xfixes_watch else ("wl-paste" if wl_watch else ("gnome-shell" if gnome_bridge else None))
     result["ok"] = bool(daemon_ok and mime and result["clipboard_backend"])
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0 if result["ok"] else 1

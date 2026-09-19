@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlparse
 from .broker import EventBroker
 from .store import Store
 from .util import canonical_url, db_path, now, overlay_path, parse_codex_link, write_json_atomic
+from .xfixes_watch import XFixesWatch
 
 HOST = os.environ.get("CCS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CCS_PORT", "43817"))
@@ -32,6 +33,7 @@ class App:
         self.broker = broker or EventBroker()
         self._open_codex = open_codex or self._default_open_codex
         self._clipboard_process: subprocess.Popen | None = None
+        self._xfixes_watch: XFixesWatch | None = None
         self._lock = threading.Lock()
         self._last_clipboard_thread: str | None = None
         self._last_clipboard_at = 0.0
@@ -51,6 +53,11 @@ class App:
     def start_clipboard_watch(self) -> None:
         if os.environ.get("CCS_DISABLE_CLIPBOARD_WATCH") == "1":
             return
+        if shutil.which("wl-paste"):
+            watch = XFixesWatch(self._read_xfixes_clipboard)
+            if watch.start():
+                self._xfixes_watch = watch
+                return
         if not shutil.which("wl-paste"):
             print("chrome-codex-switcher: wl-paste not found; clipboard auto-switch disabled", file=sys.stderr)
             return
@@ -59,6 +66,22 @@ class App:
             self._clipboard_process = subprocess.Popen(cmd, start_new_session=True)
         except OSError as exc:
             print(f"chrome-codex-switcher: clipboard watcher failed: {exc}", file=sys.stderr)
+
+    def _read_xfixes_clipboard(self) -> None:
+        try:
+            proc = subprocess.run(
+                ["wl-paste", "--type", "text", "--no-newline"],
+                capture_output=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        if proc.returncode or len(proc.stdout) > 4096:
+            return
+        text = proc.stdout.decode("utf-8", errors="replace").strip()
+        if text.lower().startswith("codex://threads/") and "\n" not in text:
+            self.handle_clipboard(text)
 
     def stop_clipboard_watch(self) -> None:
         proc = self._clipboard_process
@@ -76,6 +99,7 @@ class App:
             "host": HOST,
             "port": PORT,
             "clipboard_watch": bool(self._clipboard_process and self._clipboard_process.poll() is None),
+            "xfixes_watch": bool(self._xfixes_watch and self._xfixes_watch.active),
             "auto_switch_on_codex_copy": bool(self.settings.get("auto_switch_on_codex_copy", True)),
         }
 
