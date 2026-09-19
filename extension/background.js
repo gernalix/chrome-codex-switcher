@@ -1,7 +1,10 @@
 const BASE = "http://127.0.0.1:43817";
 const MAP_KEY = "tabContexts";
+const PENDING_PROMPT_CAPTURE_KEY = "pendingPromptChromeCapture";
+const PROMPT_CAPTURE_TTL_MS = 5 * 60 * 1000;
 let eventLoopRunning = false;
 let eventSeq = 0;
+let promptCaptureBusy = false;
 
 function canonicalUrl(raw) {
   try {
@@ -10,6 +13,16 @@ function canonicalUrl(raw) {
     return url.toString();
   } catch {
     return raw || "";
+  }
+}
+
+function isPromptChatTab(tab) {
+  const raw = tab?.url || tab?.pendingUrl || "";
+  try {
+    const url = new URL(raw);
+    return url.origin === "https://chatgpt.com" && /^\/(?:c|g)\//.test(url.pathname);
+  } catch {
+    return false;
   }
 }
 
@@ -119,6 +132,103 @@ async function armPrompt(promptId, tab, context) {
       title: tab?.title || ""
     }
   });
+}
+
+async function clearPendingPromptCapture() {
+  await chrome.storage.local.remove(PENDING_PROMPT_CAPTURE_KEY);
+}
+
+async function readPendingPromptCapture() {
+  const stored = await chrome.storage.local.get(PENDING_PROMPT_CAPTURE_KEY);
+  const pending = stored[PENDING_PROMPT_CAPTURE_KEY];
+  if (!pending) return null;
+  if (Number(pending.expiresAt || 0) <= Date.now()) {
+    await clearPendingPromptCapture();
+    return null;
+  }
+  return pending;
+}
+
+async function beginPromptLateBind(promptId) {
+  const known = await promptBinding(promptId);
+  const binding = known?.binding || {};
+  const hasChrome = !!(binding.context_id && binding.url);
+  const hasCodex = !!(binding.codex_thread && binding.codex_deep_link);
+
+  if (hasChrome && hasCodex) {
+    await clearPendingPromptCapture();
+    return {ok: true, stage: "complete", binding};
+  }
+
+  if (hasChrome) {
+    await clearPendingPromptCapture();
+    const armed = await api("/api/prompt/arm", {
+      method: "POST",
+      body: {
+        prompt_id: promptId,
+        context_id: binding.context_id,
+        url: binding.url,
+        title: binding.title || ""
+      }
+    });
+    if (!armed?.ok || armed.pending?.context_id !== binding.context_id) {
+      return {ok: false, error: "prompt_arm_failed"};
+    }
+    return {ok: true, stage: "codex", binding};
+  }
+
+  const pending = {
+    promptId,
+    armedAt: Date.now(),
+    expiresAt: Date.now() + PROMPT_CAPTURE_TTL_MS
+  };
+  await chrome.storage.local.set({[PENDING_PROMPT_CAPTURE_KEY]: pending});
+  return {ok: true, stage: "chrome", pending, hasCodex};
+}
+
+async function maybeCapturePromptChromeTab(tab) {
+  if (promptCaptureBusy || !isPromptChatTab(tab)) return null;
+  const pending = await readPendingPromptCapture();
+  if (!pending) return null;
+
+  promptCaptureBusy = true;
+  try {
+    const promptId = String(pending.promptId || "");
+    const context = await ensureContext(tab);
+    if (!context) throw new Error("context_creation_failed");
+
+    const bound = await bindPrompt(promptId, tab, context);
+    if (!bound?.ok || bound.binding?.context_id !== context.id) {
+      throw new Error(bound?.error || "prompt_bind_failed");
+    }
+
+    let stage = "complete";
+    if (!(bound.binding?.codex_thread && bound.binding?.codex_deep_link)) {
+      const armed = await armPrompt(promptId, tab, context);
+      if (!armed?.ok || armed.pending?.context_id !== context.id) {
+        throw new Error(armed?.error || "prompt_arm_failed");
+      }
+      stage = "codex";
+    }
+
+    await clearPendingPromptCapture();
+    try {
+      await chrome.tabs.sendMessage(tab.id, {type: "promptLateBindStatus", promptId, stage});
+    } catch {}
+    return {ok: true, promptId, stage, context_id: context.id};
+  } catch (error) {
+    await clearPendingPromptCapture();
+    try {
+      await chrome.tabs.sendMessage(tab.id, {
+        type: "promptLateBindStatus",
+        stage: "error",
+        error: String(error?.message || error)
+      });
+    } catch {}
+    return {ok: false, error: String(error?.message || error)};
+  } finally {
+    promptCaptureBusy = false;
+  }
 }
 
 async function currentContext() {
@@ -408,6 +518,18 @@ runEventLoop();
 chrome.runtime.onStartup.addListener(() => runEventLoop());
 chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === "bridge-keepalive") runEventLoop(); });
 
+chrome.tabs.onActivated.addListener(async ({tabId}) => {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    await maybeCapturePromptChromeTab(tab);
+  } catch {}
+});
+
+chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
+  if (!changeInfo.url && changeInfo.status !== "complete") return;
+  try { await maybeCapturePromptChromeTab(tab); } catch {}
+});
+
 chrome.commands.onCommand.addListener(async command => {
   if (command === "switch-twin") await switchCurrent();
   if (command === "link-twin") await armCurrent();
@@ -458,6 +580,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ok: true, promptText: await promptText(message.promptId)});
       } else if (message.type === "prompt:launch") {
         sendResponse(await launchPrompt(message.promptId, sender.tab || await currentTab()));
+      } else if (message.type === "prompt:bind-late") {
+        sendResponse(await beginPromptLateBind(message.promptId));
       } else if (message.type === "prompt:focus") {
         sendResponse(await focusPrompt(message.promptId, sender.tab || await currentTab(), {create: false, arm: false}));
       } else if (message.type === "prompt:codex") {
