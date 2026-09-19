@@ -79,14 +79,14 @@ context-twin status
 
 ### Pair Chrome Y ↔ Codex X
 
-1. In Chrome Y, press **Alt+Shift+L** or click **Link Codex** in the floating note.
+1. In Chrome Y, press **Alt+Shift+K** or click **Link Codex** in the floating note.
 2. Switch to Codex X.
 3. In Codex Desktop press **Copy chat deep link** (`Ctrl+Alt+L` on the current Linux build).
 4. The daemon stores the pair.
 
 ### Chrome → Codex
 
-While Chrome Y is active, press **Alt+Shift+T** or click **↔ Codex**.
+While Chrome Y is active, press **Alt+Shift+G** or click **↔ Codex**.
 
 ### Codex → Chrome
 
@@ -107,7 +107,7 @@ The Chrome note is:
 - persisted per tab-context;
 - searchable from the side panel.
 
-Use **Alt+Shift+N** to show/hide the note in the active Chrome tab.
+Use **Alt+Shift+V** to show/hide the note in the active Chrome tab.
 
 ## CLI
 

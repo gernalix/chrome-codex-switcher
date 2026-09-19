@@ -11,15 +11,15 @@
   "side_panel": {"default_path": "sidepanel.html"},
   "commands": {
     "switch-twin": {
-      "suggested_key": {"default": "Alt+Shift+T", "linux": "Alt+Shift+T"},
+      "suggested_key": {"default": "Alt+Shift+G", "linux": "Alt+Shift+G"},
       "description": "Switch from the active Chrome tab to its Codex twin"
     },
     "link-twin": {
-      "suggested_key": {"default": "Alt+Shift+L", "linux": "Alt+Shift+L"},
+      "suggested_key": {"default": "Alt+Shift+K", "linux": "Alt+Shift+K"},
       "description": "Arm the active Chrome tab to link with the next copied Codex deep link"
     },
     "toggle-note": {
-      "suggested_key": {"default": "Alt+Shift+N", "linux": "Alt+Shift+N"},
+      "suggested_key": {"default": "Alt+Shift+V", "linux": "Alt+Shift+V"},
       "description": "Show or hide the floating note"
     }
   },
