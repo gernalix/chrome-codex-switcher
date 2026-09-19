@@ -237,6 +237,10 @@ async function openPromptCodex(promptId) {
   });
 }
 
+async function verifyPromptSnapshot(promptId) {
+  return await api(`/api/verify/prompt/${encodeURIComponent(promptId)}`);
+}
+
 async function findContextTab(payload) {
   const map = await readTabMap();
   for (const [tabId, value] of Object.entries(map)) {
@@ -431,6 +435,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(await focusPrompt(message.promptId, sender.tab || await currentTab(), {create: false, arm: false}));
       } else if (message.type === "prompt:codex") {
         sendResponse(await openPromptCodex(message.promptId));
+      } else if (message.type === "prompt:verify") {
+        sendResponse(await verifyPromptSnapshot(message.promptId));
       } else {
         sendResponse({ok: false, error: "unknown_message"});
       }
