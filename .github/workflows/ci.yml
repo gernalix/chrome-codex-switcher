@@ -21,5 +21,7 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Validate extension JSON
         run: python -m json.tool extension/manifest.json >/dev/null
+      - name: Validate GNOME companion JavaScript
+        run: node --check contrib/gnome-extension@gernalix.github.com/extension.js
       - name: Shell syntax
         run: bash -n install.sh uninstall.sh
