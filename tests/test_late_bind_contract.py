@@ -12,13 +12,19 @@ class LateBindContractTests(unittest.TestCase):
         content = (ROOT / "extension" / "content.js").read_text(encoding="utf-8")
 
         self.assertIn('"prompt:bind-late"', background)
+        self.assertIn('"prompt:bind-chrome"', background)
+        self.assertIn('"prompt:bind-codex"', background)
+        self.assertIn("beginPromptChromeBind", background)
+        self.assertIn("beginPromptCodexBind", background)
+        self.assertIn("promptChromeCandidates", background)
+        self.assertIn("/api/prompt/recover-codex", background)
         self.assertIn("beginPromptLateBind", background)
         self.assertIn("maybeCapturePromptChromeTab", background)
         self.assertIn("chrome.tabs.onActivated.addListener", background)
         self.assertIn("chrome.tabs.onUpdated.addListener", background)
         self.assertIn("PENDING_PROMPT_CAPTURE_KEY", background)
         self.assertIn("promptLateBindStatus", content)
-        self.assertIn("copy|launch|bind|chrome|codex|verify", content)
+        self.assertIn("bind-chrome|bind-codex", content)
 
     def test_capture_is_limited_to_existing_chatgpt_conversations(self):
         background = (ROOT / "extension" / "background.js").read_text(encoding="utf-8")
@@ -30,7 +36,7 @@ class LateBindContractTests(unittest.TestCase):
         manifest = json.loads((ROOT / "extension" / "manifest.json").read_text(encoding="utf-8"))
         self.assertIn("tabs", manifest["permissions"])
         self.assertIn("storage", manifest["permissions"])
-        self.assertEqual("0.3.1", manifest["version"])
+        self.assertEqual("0.3.2", manifest["version"])
 
 
 if __name__ == "__main__":
