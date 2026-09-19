@@ -742,7 +742,7 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/gnome-runtime":
                 state = APP.store.get_meta("gnome_runtime")
                 self._json(HTTPStatus.OK, {"ok": isinstance(state, dict), "gnome_runtime": state if isinstance(state, dict) else None})
-            elif re.fullmatch(r"/api/verify/prompt/\\d{6}", parsed.path):
+            elif re.fullmatch(r"/api/verify/prompt/\d{6}", parsed.path):
                 prompt_id = parsed.path.rsplit("/", 1)[-1]
                 self._json(HTTPStatus.OK, APP.verify_prompt_snapshot(prompt_id))
             elif parsed.path == "/api/control/ack":
