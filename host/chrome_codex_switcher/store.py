@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS contexts (
     url TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT '',
     note TEXT NOT NULL DEFAULT '',
+    codex_note TEXT NOT NULL DEFAULT '',
+    notes_independent INTEGER NOT NULL DEFAULT 0,
     geometry_json TEXT NOT NULL DEFAULT '{}',
     hidden INTEGER NOT NULL DEFAULT 0,
     collapsed INTEGER NOT NULL DEFAULT 0,
@@ -55,6 +57,12 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
             db.executescript(SCHEMA)
+            columns = {str(row["name"]) for row in db.execute("PRAGMA table_info(contexts)").fetchall()}
+            if "codex_note" not in columns:
+                db.execute("ALTER TABLE contexts ADD COLUMN codex_note TEXT NOT NULL DEFAULT ''")
+                db.execute("UPDATE contexts SET codex_note=note")
+            if "notes_independent" not in columns:
+                db.execute("ALTER TABLE contexts ADD COLUMN notes_independent INTEGER NOT NULL DEFAULT 0")
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=5)
@@ -74,6 +82,7 @@ class Store:
             result.pop("geometry_json", None)
         result["hidden"] = bool(result["hidden"])
         result["collapsed"] = bool(result["collapsed"])
+        result["notes_independent"] = bool(result.get("notes_independent", 0))
         return result
 
     def upsert_context(self, context_id: str, url: str, title: str = "") -> dict[str, Any]:
@@ -101,9 +110,62 @@ class Store:
                 context["twin"] = dict(twin) if twin else None
             return context
 
-    def set_note(self, context_id: str, note: str) -> dict[str, Any] | None:
+    def set_note(self, context_id: str, note: str, *, surface: str = "chrome") -> dict[str, Any] | None:
+        context = self.get_context(context_id)
+        if not context:
+            return None
+        surface = "codex" if surface == "codex" else "chrome"
         with self._connect() as db:
-            db.execute("UPDATE contexts SET note=?, updated_at=? WHERE id=?", (note, now(), context_id))
+            if context.get("notes_independent"):
+                column = "codex_note" if surface == "codex" else "note"
+                db.execute(
+                    f"UPDATE contexts SET {column}=?, updated_at=? WHERE id=?",
+                    (note, now(), context_id),
+                )
+            else:
+                db.execute(
+                    "UPDATE contexts SET note=?, codex_note=?, updated_at=? WHERE id=?",
+                    (note, note, now(), context_id),
+                )
+        return self.get_context(context_id)
+
+    def set_note_mode(
+        self,
+        context_id: str,
+        independent: bool,
+        *,
+        source: str = "chrome",
+        current_note: str | None = None,
+    ) -> dict[str, Any] | None:
+        context = self.get_context(context_id)
+        if not context:
+            return None
+        source = "codex" if source == "codex" else "chrome"
+        was_independent = bool(context.get("notes_independent"))
+        with self._connect() as db:
+            if independent:
+                if not was_independent:
+                    shared = str(context.get("note") or "")
+                    db.execute(
+                        "UPDATE contexts SET codex_note=?, notes_independent=1, updated_at=? WHERE id=?",
+                        (shared, now(), context_id),
+                    )
+                else:
+                    db.execute(
+                        "UPDATE contexts SET notes_independent=1, updated_at=? WHERE id=?",
+                        (now(), context_id),
+                    )
+            else:
+                if current_note is not None:
+                    shared = str(current_note)
+                elif source == "codex":
+                    shared = str(context.get("codex_note") or "")
+                else:
+                    shared = str(context.get("note") or "")
+                db.execute(
+                    "UPDATE contexts SET note=?, codex_note=?, notes_independent=0, updated_at=? WHERE id=?",
+                    (shared, shared, now(), context_id),
+                )
         return self.get_context(context_id)
 
     def set_ui(self, context_id: str, *, geometry: dict | None = None, hidden: bool | None = None, collapsed: bool | None = None) -> dict[str, Any] | None:
@@ -159,7 +221,7 @@ class Store:
         with self._connect() as db:
             row = db.execute(
                 """
-                SELECT t.codex_thread,t.codex_deep_link,t.context_id,c.url,c.title,c.note
+                SELECT t.codex_thread,t.codex_deep_link,t.context_id,c.url,c.title,c.note,c.codex_note,c.notes_independent
                 FROM twins t JOIN contexts c ON c.id=t.context_id
                 WHERE t.context_id=?
                 """,
@@ -171,7 +233,7 @@ class Store:
         with self._connect() as db:
             row = db.execute(
                 """
-                SELECT t.codex_thread,t.codex_deep_link,t.context_id,c.url,c.title,c.note
+                SELECT t.codex_thread,t.codex_deep_link,t.context_id,c.url,c.title,c.note,c.codex_note,c.notes_independent
                 FROM twins t JOIN contexts c ON c.id=t.context_id
                 WHERE t.codex_thread=?
                 """,
@@ -295,7 +357,7 @@ class Store:
         with self._connect() as db:
             row = db.execute(
                 """SELECT p.prompt_id,p.context_id,p.codex_thread,p.codex_deep_link,
-                          p.created_at,p.updated_at,c.url,c.title,c.note
+                          p.created_at,p.updated_at,c.url,c.title,c.note,c.codex_note,c.notes_independent
                    FROM prompt_bindings p
                    LEFT JOIN contexts c ON c.id=p.context_id
                    WHERE p.prompt_id=?""",
@@ -307,7 +369,7 @@ class Store:
         with self._connect() as db:
             rows = db.execute(
                 """SELECT p.prompt_id,p.context_id,p.codex_thread,p.codex_deep_link,
-                          p.created_at,p.updated_at,c.url,c.title,c.note
+                          p.created_at,p.updated_at,c.url,c.title,c.note,c.codex_note,c.notes_independent
                    FROM prompt_bindings p
                    LEFT JOIN contexts c ON c.id=p.context_id
                    ORDER BY p.prompt_id"""
