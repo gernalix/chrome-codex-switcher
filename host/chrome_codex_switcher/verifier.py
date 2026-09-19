@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import os
 import re
 import time
 from pathlib import Path
 from typing import Callable, Any
 
-from .util import overlay_path
+from .util import cache_dir, overlay_path
 
 PROMPT_ID_RE = re.compile(r"\d{6}\Z")
 SESSION_ID_RE = re.compile(
@@ -109,6 +110,16 @@ def verify_prompt(
     scope: str = "prompt",
 ) -> dict[str, Any]:
     try:
+        if full or scope in {"note", "overlay"}:
+            cache_dir().mkdir(parents=True, exist_ok=True)
+            with (cache_dir() / "verify.lock").open("a+") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return {"prompt_id": prompt_id, "scope": scope, "result": "BLOCKED",
+                            "gates": {}, "blocker": "verification_already_running"}
+                return _verify_prompt(prompt_id, request=request, full=full,
+                                      timeout=timeout, session_root=session_root, scope=scope)
         return _verify_prompt(prompt_id, request=request, full=full,
                               timeout=timeout, session_root=session_root, scope=scope)
     except ValueError:
@@ -336,6 +347,7 @@ def _verify_prompt(
         )
 
     failure = None
+    last_marker = original["note"]
     try:
         opened = call("/api/prompt/open-codex", {"prompt_id": prompt_id})
         if not opened.get("ok"):
@@ -387,6 +399,7 @@ def _verify_prompt(
         )
         if not changed.get("ok"):
             raise RuntimeError("chrome_note_write_failed")
+        last_marker = chrome_marker
         wait_chrome_note(chrome_marker)
         wait_gnome_note(chrome_marker)
         gates["note_chrome_to_codex"] = True
@@ -397,6 +410,7 @@ def _verify_prompt(
         )
         if not changed.get("ok"):
             raise RuntimeError("codex_note_write_failed")
+        last_marker = codex_marker
         wait_chrome_note(codex_marker)
         wait_gnome_note(codex_marker)
         gates["note_codex_to_chrome"] = True
@@ -443,6 +457,9 @@ def _verify_prompt(
     finally:
         if scope != "overlay":
           try:
+            latest = call(f"/api/context?context_id={context_id}").get("context")
+            if not isinstance(latest, dict) or latest.get("note") != last_marker:
+                raise RuntimeError("note_changed_concurrently_restore_skipped")
             call(
                 "/api/note",
                 {"context_id": context_id, "note": original["note"], "surface": "chrome"},
