@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .broker import EventBroker
 from .store import Store
-from .util import canonical_url, db_path, now, overlay_path, parse_codex_link, write_json_atomic
+from .util import cache_dir, canonical_url, db_path, now, overlay_path, parse_codex_link, write_json_atomic
 from .xfixes_watch import XFixesWatch
 
 HOST = os.environ.get("CCS_HOST", "127.0.0.1")
@@ -184,6 +184,10 @@ class App:
                 "codex_thread": thread,
             }
             self.broker.emit("focus_chrome", payload)
+            write_json_atomic(
+                cache_dir() / "focus_request.json",
+                {"id": str(time.time_ns()), "title": payload["title"], "issued_at": now()},
+            )
             return {"ok": True, "action": "focus_chrome", "target": payload}
         return {"ok": True, "action": "active_thread_updated", "linked": bool(twin)}
 

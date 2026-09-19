@@ -22,6 +22,7 @@ function isCodexLink(text) {
 
 export default class ChromeCodexSwitcherOverlay extends Extension {
     enable() {
+        this._lastFocusRequest = null;
         this._box = new St.BoxLayout({vertical: true, style_class: 'context-twin-overlay', visible: false});
         this._title = new St.Label({style_class: 'context-twin-title'});
         this._note = new St.Label({style_class: 'context-twin-note'});
@@ -77,6 +78,7 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
     }
 
     _refresh() {
+        this._focusRequestedChrome();
         const win = global.display.focus_window;
         if (!isCodexWindow(win)) { this._box.hide(); return; }
         const path = GLib.build_filenamev([GLib.get_user_cache_dir(), 'chrome-codex-switcher', 'overlay.json']);
@@ -95,5 +97,25 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         } catch (_) {
             this._box.hide();
         }
+    }
+
+    _focusRequestedChrome() {
+        const path = GLib.build_filenamev([GLib.get_user_cache_dir(), 'chrome-codex-switcher', 'focus_request.json']);
+        try {
+            const [ok, bytes] = GLib.file_get_contents(path);
+            if (!ok) return;
+            const request = JSON.parse(new TextDecoder().decode(bytes));
+            if (request.id === this._lastFocusRequest || Date.now() / 1000 - request.issued_at > 10) return;
+            const title = String(request.title || '').toLowerCase();
+            if (!title) return;
+            const actor = global.get_window_actors().find(actor => {
+                const win = actor.meta_window;
+                const app = String(win.get_sandboxed_app_id?.() || win.get_wm_class?.() || '').toLowerCase();
+                return app.includes('chrome') && String(win.get_title() || '').toLowerCase().includes(title);
+            });
+            if (!actor) return;
+            actor.meta_window.activate(global.get_current_time());
+            this._lastFocusRequest = request.id;
+        } catch (_) {}
     }
 }
