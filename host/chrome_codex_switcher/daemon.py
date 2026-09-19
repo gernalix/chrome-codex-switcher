@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -163,20 +164,85 @@ class App:
         return {"ok": True, "action": "overlay_hidden", "reason": reason}
 
     def health(self) -> dict[str, Any]:
+        gnome = self.store.get_meta("gnome_runtime")
+        if not isinstance(gnome, dict):
+            gnome = None
+        gnome_summary = None
+        if gnome:
+            gnome_summary = {
+                key: gnome.get(key)
+                for key in (
+                    "seen_at",
+                    "focused_codex",
+                    "visible",
+                    "context_id",
+                    "codex_thread",
+                    "notes_independent",
+                )
+            }
         return {
             "ok": True,
-            "version": "0.1.0",
+            "version": "0.2.0",
             "host": HOST,
             "port": PORT,
             "clipboard_watch": bool(self._clipboard_process and self._clipboard_process.poll() is None),
             "xfixes_watch": bool(self._xfixes_watch and self._xfixes_watch.active),
             "auto_switch_on_codex_copy": bool(self.settings.get("auto_switch_on_codex_copy", True)),
             "extension_runtime": self.store.get_meta("extension_runtime"),
+            "gnome_runtime": gnome_summary,
             "codex_a11y_watch": bool(self._a11y_watch and self._a11y_watch.active),
             "codex_a11y_error": self._a11y_watch.error if self._a11y_watch else None,
             "active_codex_title": self._active_codex_title,
         }
 
+    @staticmethod
+    def _truthy(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def gnome_heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
+        state = {
+            "seen_at": now(),
+            "focused_codex": self._truthy(payload.get("focused_codex")),
+            "visible": self._truthy(payload.get("visible")),
+            "context_id": str(payload.get("context_id") or "") or None,
+            "codex_thread": str(payload.get("codex_thread") or "") or None,
+            "note": str(payload.get("note") or ""),
+            "notes_independent": self._truthy(payload.get("notes_independent")),
+        }
+        self.store.set_meta("gnome_runtime", state)
+        return {"ok": True, "gnome_runtime": state}
+
+    def control_ack(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request_id = str(payload.get("request_id") or "").strip()
+        if not request_id:
+            raise ValueError("control_request_id_missing")
+        ack = dict(payload)
+        ack["request_id"] = request_id
+        ack["seen_at"] = now()
+        self.store.set_meta(f"control_ack:{request_id}", ack)
+        return {"ok": True, "ack": ack}
+
+    def request_chrome_control(self, payload: dict[str, Any]) -> dict[str, Any]:
+        prompt_id = self._prompt_id(payload.get("prompt_id"))
+        action = str(payload.get("action") or "probe").strip().lower()
+        if action not in {"probe", "focus", "ensure", "workflowy"}:
+            raise ValueError("invalid_control_action")
+        binding = self.store.prompt_binding(prompt_id)
+        if action != "ensure" and (not binding or not binding.get("context_id")):
+            return {"ok": False, "error": "chrome_context_missing"}
+        request_id = uuid.uuid4().hex
+        event_payload = {
+            "request_id": request_id,
+            "action": action,
+            "prompt_id": prompt_id,
+            "context_id": binding.get("context_id") if binding else None,
+            "url": binding.get("url") if binding else None,
+            "title": binding.get("title") if binding else None,
+        }
+        self.broker.emit("control_chrome", event_payload)
+        return {"ok": True, "request_id": request_id, "request": event_payload}
 
     @staticmethod
     def _prompt_id(value: Any) -> str:
@@ -208,12 +274,23 @@ class App:
     def bind_prompt(self, payload: dict[str, Any]) -> dict[str, Any]:
         prompt_id = self._prompt_id(payload.get("prompt_id"))
         context_id = str(payload.get("context_id") or "").strip() or None
+        current = self.store.prompt_binding(prompt_id)
         if context_id:
             url = canonical_url(str(payload.get("url") or ""))
             title = str(payload.get("title") or "")
             if url:
                 self.store.upsert_context(context_id, url, title)
-        binding = self.store.bind_prompt(prompt_id, context_id=context_id)
+            if current and current.get("codex_thread") and current.get("codex_deep_link"):
+                binding = self.store.link_prompt(
+                    prompt_id,
+                    context_id,
+                    str(current["codex_thread"]),
+                    str(current["codex_deep_link"]),
+                )
+            else:
+                binding = self.store.bind_prompt(prompt_id, context_id=context_id)
+        else:
+            binding = self.store.bind_prompt(prompt_id, context_id=context_id)
         self.broker.emit("prompt_bound", {"prompt_id": prompt_id, "context_id": context_id})
         return {"ok": True, "binding": binding}
 
@@ -244,28 +321,33 @@ class App:
     def open_prompt_codex(self, payload: dict[str, Any]) -> dict[str, Any]:
         prompt_id = self._prompt_id(payload.get("prompt_id"))
         binding = self.store.prompt_binding(prompt_id)
-        if not binding or not binding.get("codex_deep_link"):
+        if not binding or not binding.get("codex_deep_link") or not binding.get("codex_thread"):
             return {"ok": False, "error": "codex_not_linked"}
+        thread = str(binding["codex_thread"])
+        self._expected_codex_thread = thread
+        self._expected_previous_title = self._active_codex_title
+        self._expected_until = now() + 8.0
+        self.store.set_meta("active_codex_thread", thread)
+        self._write_overlay_for_thread(thread)
         self._open_codex(str(binding["codex_deep_link"]))
         return {"ok": True, "binding": binding}
 
     def launch_prompt_codex(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Open Codex last after Chrome is prepared, so Codex keeps final focus."""
+        """Open the prompt's Codex target after Chrome has been prepared."""
         prompt_id = self._prompt_id(payload.get("prompt_id"))
         binding = self.store.prompt_binding(prompt_id)
-        if binding and binding.get("codex_deep_link"):
-            deep_link = str(binding["codex_deep_link"])
-            self._open_codex(deep_link)
-            return {"ok": True, "mode": "existing", "deep_link": deep_link, "binding": binding}
+
+        if binding and binding.get("codex_deep_link") and binding.get("codex_thread"):
+            result = self.open_prompt_codex({"prompt_id": prompt_id})
+            return {**result, "mode": "existing"}
 
         pending = self.store.get_meta("pending_prompt")
-        if not isinstance(pending, dict):
-            return {"ok": False, "error": "prompt_not_armed"}
-        if str(pending.get("prompt_id") or "") != prompt_id:
+        if not isinstance(pending, dict) or str(pending.get("prompt_id") or "") != prompt_id:
             return {"ok": False, "error": "prompt_not_armed"}
         if float(pending.get("expires_at", 0)) < now():
             self.store.delete_meta("pending_prompt")
             return {"ok": False, "error": "prompt_arm_expired"}
+
         context_id = str(pending.get("context_id") or "").strip()
         if not context_id or not self.store.get_context(context_id):
             return {"ok": False, "error": "prompt_context_missing"}
@@ -275,9 +357,9 @@ class App:
         return {
             "ok": True,
             "mode": "new",
-            "deep_link": deep_link,
             "prompt_id": prompt_id,
             "context_id": context_id,
+            "deep_link": deep_link,
         }
 
     def upsert_context(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -602,8 +684,21 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/prompt/text":
                 prompt_id = query.get("prompt_id", [""])[0]
                 self._json(HTTPStatus.OK, APP.prompt_text(prompt_id))
+            elif re.fullmatch(r"/api/verify/prompt/\d{6}", parsed.path):
+                from .verifier import verify_prompt
+                from .cli import request
+                prompt_id = parsed.path.rsplit("/", 1)[-1]
+                scope = query.get("scope", ["prompt"])[0]
+                self._json(HTTPStatus.OK, verify_prompt(prompt_id, request=request, full=scope == "prompt", scope=scope))
             elif parsed.path == "/api/prompts":
                 self._json(HTTPStatus.OK, {"ok": True, "bindings": APP.store.list_prompt_bindings()})
+            elif parsed.path == "/api/gnome-runtime":
+                state = APP.store.get_meta("gnome_runtime")
+                self._json(HTTPStatus.OK, {"ok": isinstance(state, dict), "gnome_runtime": state if isinstance(state, dict) else None})
+            elif parsed.path == "/api/control/ack":
+                request_id = query.get("request_id", [""])[0]
+                ack = APP.store.get_meta(f"control_ack:{request_id}") if request_id else None
+                self._json(HTTPStatus.OK, {"ok": isinstance(ack, dict), "ack": ack if isinstance(ack, dict) else None})
             elif parsed.path == "/api/events":
                 after = int(query.get("after", ["0"])[0])
                 timeout = min(28.0, max(0.0, float(query.get("timeout", ["25"])[0])))
@@ -649,6 +744,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, APP.set_settings(payload))
             elif parsed.path == "/api/extension-heartbeat":
                 self._json(HTTPStatus.OK, APP.extension_heartbeat(payload))
+            elif parsed.path == "/api/gnome-heartbeat":
+                self._json(HTTPStatus.OK, APP.gnome_heartbeat(payload))
+            elif parsed.path == "/api/control-ack":
+                self._json(HTTPStatus.OK, APP.control_ack(payload))
+            elif parsed.path == "/api/prompt/control":
+                self._json(HTTPStatus.OK, APP.request_chrome_control(payload))
             elif parsed.path == "/api/prompt/bind":
                 self._json(HTTPStatus.OK, APP.bind_prompt(payload))
             elif parsed.path == "/api/prompt/arm":
