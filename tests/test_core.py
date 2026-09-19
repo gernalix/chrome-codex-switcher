@@ -119,7 +119,7 @@ class AppTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.open_codex.assert_called_once_with("codex://threads/thread-prompt")
 
-    def test_launch_prompt_codex_opens_new_thread_only_after_real_arm(self):
+    def test_launch_prompt_codex_opens_new_thread_after_real_arm(self):
         self.app.upsert_context(self.context)
         self.app.bind_prompt({**self.context, "prompt_id": "514458"})
         self.app.arm_prompt({**self.context, "prompt_id": "514458"})
@@ -131,7 +131,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(result["context_id"], "ctx-1")
         self.open_codex.assert_called_once_with("codex://threads/new")
 
-    def test_launch_prompt_codex_reuses_existing_exact_thread(self):
+    def test_launch_prompt_codex_reuses_existing_thread(self):
         self.app.upsert_context(self.context)
         self.store.bind_prompt(
             "514458",
@@ -224,6 +224,65 @@ class AppTests(unittest.TestCase):
         state = json.loads(self.overlay_path.read_text(encoding="utf-8"))
         self.assertFalse(state["visible"])
         self.assertEqual(state["reason"], "active_thread_unmapped")
+
+    def test_bind_prompt_repairs_existing_thread_only_binding(self):
+        self.store.bind_prompt(
+            "514458",
+            codex_thread="thread-prompt",
+            codex_deep_link="codex://threads/thread-prompt",
+        )
+        result = self.app.bind_prompt({**self.context, "prompt_id": "514458"})
+        self.assertTrue(result["ok"])
+        binding = self.store.prompt_binding("514458")
+        self.assertEqual("ctx-1", binding["context_id"])
+        twin = self.store.twin_by_thread("thread-prompt")
+        self.assertEqual("ctx-1", twin["context_id"])
+
+    def test_control_plane_request_and_ack(self):
+        self.app.upsert_context(self.context)
+        self.store.bind_prompt("514458", context_id="ctx-1")
+        started = self.app.request_chrome_control({"prompt_id": "514458", "action": "probe"})
+        self.assertTrue(started["ok"])
+        _seq, events = self.broker.wait_after(0, 0)
+        control = [event for event in events if event["type"] == "control_chrome"][-1]
+        self.assertEqual("514458", control["payload"]["prompt_id"])
+        request_id = started["request_id"]
+        acked = self.app.control_ack({
+            "request_id": request_id,
+            "ok": True,
+            "surface": "chrome",
+            "context_id": "ctx-1",
+        })
+        self.assertTrue(acked["ok"])
+        self.assertTrue(self.store.get_meta(f"control_ack:{request_id}")["ok"])
+
+    def test_gnome_heartbeat_is_normalized(self):
+        result = self.app.gnome_heartbeat({
+            "focused_codex": "1",
+            "visible": "true",
+            "context_id": "ctx-1",
+            "codex_thread": "thread-1",
+            "note": "hello",
+            "notes_independent": "0",
+        })
+        state = result["gnome_runtime"]
+        self.assertTrue(state["focused_codex"])
+        self.assertTrue(state["visible"])
+        self.assertFalse(state["notes_independent"])
+        self.assertEqual("hello", state["note"])
+
+    def test_open_prompt_codex_sets_expected_thread_for_a11y(self):
+        self.app.upsert_context(self.context)
+        self.store.link_prompt(
+            "514458",
+            "ctx-1",
+            "thread-prompt",
+            "codex://threads/thread-prompt",
+        )
+        result = self.app.open_prompt_codex({"prompt_id": "514458"})
+        self.assertTrue(result["ok"])
+        self.assertEqual("thread-prompt", self.app._expected_codex_thread)
+        self.open_codex.assert_called_once_with("codex://threads/thread-prompt")
 
     def test_store_migrates_existing_note_column_without_data_loss(self):
         legacy_path = Path(self.tmp.name) / "legacy.sqlite3"
