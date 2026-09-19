@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from urllib.request import urlopen
 
 from .broker import EventBroker
 from .store import Store
@@ -117,6 +118,21 @@ class App:
         if not PROMPT_ID_RE.fullmatch(prompt_id):
             raise ValueError("invalid_prompt_id")
         return prompt_id
+
+    def prompt_text(self, prompt_id: str) -> dict[str, Any]:
+        prompt_id = self._prompt_id(prompt_id)
+        try:
+            with urlopen(
+                f"http://127.0.0.1:8765/roadmap/prompt/{prompt_id}",
+                timeout=1.5,
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return {"ok": False, "error": "roadmap_prompt_unavailable"}
+        text = str(payload.get("prompt_text") or "")
+        if not text:
+            return {"ok": False, "error": "prompt_text_missing"}
+        return {"ok": True, "prompt_id": prompt_id, "prompt_text": text}
 
     def prompt_binding(self, prompt_id: str) -> dict[str, Any]:
         prompt_id = self._prompt_id(prompt_id)
@@ -400,6 +416,9 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/prompt":
                 prompt_id = query.get("prompt_id", [""])[0]
                 self._json(HTTPStatus.OK, APP.prompt_binding(prompt_id))
+            elif parsed.path == "/api/prompt/text":
+                prompt_id = query.get("prompt_id", [""])[0]
+                self._json(HTTPStatus.OK, APP.prompt_text(prompt_id))
             elif parsed.path == "/api/prompts":
                 self._json(HTTPStatus.OK, {"ok": True, "bindings": APP.store.list_prompt_bindings()})
             elif parsed.path == "/api/events":
