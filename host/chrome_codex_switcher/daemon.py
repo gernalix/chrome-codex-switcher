@@ -182,7 +182,7 @@ class App:
             }
         return {
             "ok": True,
-            "version": "0.2.0",
+            "version": "0.3.0",
             "host": HOST,
             "port": PORT,
             "clipboard_watch": bool(self._clipboard_process and self._clipboard_process.poll() is None),
@@ -243,6 +243,89 @@ class App:
         }
         self.broker.emit("control_chrome", event_payload)
         return {"ok": True, "request_id": request_id, "request": event_payload}
+
+    def verify_prompt_snapshot(self, prompt_id: str) -> dict[str, Any]:
+        prompt_id = self._prompt_id(prompt_id)
+        binding = self.store.prompt_binding(prompt_id)
+        if not binding:
+            return {
+                "ok": False,
+                "result": "BLOCKED",
+                "prompt_id": prompt_id,
+                "error": "binding_missing",
+                "checks": {},
+            }
+
+        context_id = str(binding.get("context_id") or "")
+        thread = str(binding.get("codex_thread") or "")
+        deep_link = str(binding.get("codex_deep_link") or "")
+        context = self.store.get_context(context_id) if context_id else None
+        twin = context.get("twin") if isinstance(context, dict) else None
+        twin_consistent = bool(
+            isinstance(twin, dict)
+            and twin.get("codex_thread") == thread
+            and twin.get("codex_deep_link") == deep_link
+        )
+        note_consistent = bool(
+            isinstance(context, dict)
+            and (
+                bool(context.get("notes_independent"))
+                or str(context.get("note") or "") == str(context.get("codex_note") or "")
+            )
+        )
+
+        extension = self.store.get_meta("extension_runtime")
+        extension_fresh = bool(
+            isinstance(extension, dict)
+            and extension.get("version")
+            and now() - float(extension.get("seen_at") or 0) <= 90
+        )
+        gnome = self.store.get_meta("gnome_runtime")
+        gnome_fresh = bool(
+            isinstance(gnome, dict)
+            and now() - float(gnome.get("seen_at") or 0) <= 10
+        )
+
+        overlay: dict[str, Any] = {}
+        try:
+            if overlay_path().is_file():
+                value = json.loads(overlay_path().read_text(encoding="utf-8"))
+                if isinstance(value, dict):
+                    overlay = value
+        except (OSError, json.JSONDecodeError):
+            overlay = {}
+
+        overlay_consistent = True
+        if overlay.get("visible") and overlay.get("codex_thread") == thread:
+            overlay_consistent = overlay.get("context_id") == context_id
+        if isinstance(gnome, dict) and gnome.get("visible") and gnome.get("codex_thread") == thread:
+            overlay_consistent = bool(
+                overlay_consistent
+                and gnome.get("context_id") == context_id
+                and overlay.get("context_id") == context_id
+            )
+
+        checks = {
+            "context_id": bool(context_id),
+            "codex_thread": bool(thread),
+            "deep_link": bool(deep_link),
+            "twin_consistent": twin_consistent,
+            "note_consistent": note_consistent,
+            "extension_heartbeat": extension_fresh,
+            "gnome_heartbeat": gnome_fresh,
+            "a11y": bool(self._a11y_watch and self._a11y_watch.active and not self._a11y_watch.error),
+            "overlay_consistent": overlay_consistent,
+        }
+        passed = all(checks.values())
+        return {
+            "ok": passed,
+            "result": "PASS" if passed else "BLOCKED",
+            "prompt_id": prompt_id,
+            "checks": checks,
+            "binding": binding,
+            "overlay": overlay,
+            "error": None if passed else "runtime_snapshot_incomplete",
+        }
 
     @staticmethod
     def _prompt_id(value: Any) -> str:
@@ -659,6 +742,9 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/gnome-runtime":
                 state = APP.store.get_meta("gnome_runtime")
                 self._json(HTTPStatus.OK, {"ok": isinstance(state, dict), "gnome_runtime": state if isinstance(state, dict) else None})
+            elif re.fullmatch(r"/api/verify/prompt/\\d{6}", parsed.path):
+                prompt_id = parsed.path.rsplit("/", 1)[-1]
+                self._json(HTTPStatus.OK, APP.verify_prompt_snapshot(prompt_id))
             elif parsed.path == "/api/control/ack":
                 request_id = query.get("request_id", [""])[0]
                 ack = APP.store.get_meta(f"control_ack:{request_id}") if request_id else None
