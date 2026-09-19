@@ -107,6 +107,56 @@ class AppTests(unittest.TestCase):
             self.store.link_prompt("514458", "other-context", "other-thread", "codex://threads/other-thread")
         self.assertEqual(self.store.prompt_binding("514458"), binding)
 
+    def test_late_codex_discovery_can_bind_before_chrome(self):
+        session_root = Path(self.tmp.name) / "sessions"
+        session_root.mkdir()
+        session_id = "01a0bb57-51d2-7eb3-a467-58f7bb6cfba0"
+        (session_root / f"rollout-{session_id}.jsonl").write_text(
+            '{"message":"PROMPT_ID=514458"}\n',
+            encoding="utf-8",
+        )
+
+        recovered = self.app.recover_prompt_codex(
+            {"prompt_id": "514458"},
+            session_root=session_root,
+        )
+
+        self.assertTrue(recovered["ok"])
+        self.assertEqual("chrome", recovered["stage"])
+        self.assertEqual("native_session", recovered["source"])
+        partial = self.store.prompt_binding("514458")
+        self.assertIsNone(partial["context_id"])
+        self.assertEqual(session_id, partial["codex_thread"])
+
+        self.app.upsert_context(self.context)
+        completed = self.app.bind_prompt({**self.context, "prompt_id": "514458"})
+        self.assertEqual("ctx-1", completed["binding"]["context_id"])
+        self.assertEqual(session_id, self.store.twin_by_context("ctx-1")["codex_thread"])
+
+    def test_late_codex_falls_back_to_next_explicit_deep_link(self):
+        session_root = Path(self.tmp.name) / "empty-sessions"
+        session_root.mkdir()
+
+        armed = self.app.recover_prompt_codex(
+            {"prompt_id": "514458"},
+            session_root=session_root,
+        )
+        self.assertTrue(armed["ok"])
+        self.assertEqual("codex", armed["stage"])
+        self.assertEqual("clipboard", armed["source"])
+
+        linked = self.app.handle_clipboard("codex://threads/manual-thread")
+        self.assertTrue(linked["ok"])
+        binding = self.store.prompt_binding("514458")
+        self.assertIsNone(binding["context_id"])
+        self.assertEqual("manual-thread", binding["codex_thread"])
+
+    def test_prompt_context_cannot_be_stolen_by_another_prompt(self):
+        self.app.upsert_context(self.context)
+        self.app.bind_prompt({**self.context, "prompt_id": "514458"})
+        with self.assertRaisesRegex(ValueError, "prompt_context_conflict"):
+            self.app.bind_prompt({**self.context, "prompt_id": "614458"})
+
     def test_open_prompt_codex_uses_bound_deep_link(self):
         self.app.upsert_context(self.context)
         self.store.bind_prompt(
