@@ -108,14 +108,16 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
             if (request.id === this._lastFocusRequest || Date.now() / 1000 - request.issued_at > 10) return;
             const title = String(request.title || '').toLowerCase();
             if (!title) return;
-            const actor = global.get_window_actors().find(actor => {
-                const win = actor.meta_window;
-                const app = String(win.get_sandboxed_app_id?.() || win.get_wm_class?.() || '').toLowerCase();
-                return app.includes('chrome') && String(win.get_title() || '').toLowerCase().includes(title);
+            const windows = global.get_window_actors().map(actor => actor.meta_window).filter(win => {
+                const app = [win.get_sandboxed_app_id?.(), win.get_wm_class?.(), win.get_wm_class_instance?.()]
+                    .join(' ').toLowerCase();
+                return app.includes('chrome');
             });
-            if (!actor) return;
-            actor.meta_window.activate(global.get_current_time());
-            this._lastFocusRequest = request.id;
+            const win = windows.find(win => String(win.get_title() || '').toLowerCase().includes(title))
+                || (windows.length === 1 ? windows[0] : null);
+            if (!win) return;
+            if (global.display.focus_window !== win) Main.activateWindow(win);
+            if (global.display.focus_window === win) this._lastFocusRequest = request.id;
         } catch (_) {}
     }
 }
