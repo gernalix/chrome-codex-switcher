@@ -120,6 +120,11 @@ context-twin status
 context-twin list
 context-twin capture-clipboard
 context-twin overlay-state
+context-twin verify-binding 947306
+context-twin verify-note 947306
+context-twin verify-overlay
+context-twin verify-workflowy 947306
+context-twin self-test
 context-twin verify-prompt 947306
 context-twin verify-prompt 947306 --full
 ```
@@ -136,6 +141,14 @@ fresh canonical ChatGPT context rather than guessing among existing tabs. If the
 Codex thread is missing, it may pair the one unique recent native Codex session
 that explicitly contains the same six-digit PROMPT_ID; ambiguous matches fail
 closed.
+
+The daemon also exposes a fast non-destructive snapshot at
+`GET /api/verify/prompt/<PROMPT_ID>`. Workflowy's `🔎 Verify` action uses
+that endpoint and renders `✅ Runtime verified` or the precise runtime failure
+directly in the page. The granular `verify-*` commands are useful for narrow
+diagnosis, while `self-test` checks daemon/API, extension and GNOME heartbeats,
+clipboard backend, AT-SPI, SQLite, Workflowy bridge, overlay cache and event
+broker.
 
 ## Data
 
