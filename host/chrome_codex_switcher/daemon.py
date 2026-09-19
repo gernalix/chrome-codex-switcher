@@ -184,10 +184,17 @@ class App:
                 "codex_thread": thread,
             }
             self.broker.emit("focus_chrome", payload)
-            write_json_atomic(
-                cache_dir() / "focus_request.json",
-                {"id": str(time.time_ns()), "title": payload["title"], "issued_at": now()},
-            )
+            def request_focus() -> None:
+                write_json_atomic(
+                    cache_dir() / "focus_request.json",
+                    {"id": str(time.time_ns()), "title": payload["title"], "issued_at": now()},
+                )
+
+            request_focus()
+            if self._xfixes_watch or self._clipboard_process:
+                retry = threading.Timer(1.5, request_focus)
+                retry.daemon = True
+                retry.start()
             return {"ok": True, "action": "focus_chrome", "target": payload}
         return {"ok": True, "action": "active_thread_updated", "linked": bool(twin)}
 
