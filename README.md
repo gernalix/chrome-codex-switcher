@@ -133,6 +133,6 @@ It is not required for switching. It is intentionally isolated from the core so 
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -v
+PYTHONPATH=host python3 -m unittest discover -s tests -v
 python3 -m py_compile host/chrome_codex_switcher/*.py
 ```
