@@ -177,7 +177,19 @@
 
   new ResizeObserver(() => { if (context && host.style.display !== "none") saveUi(); }).observe(box);
 
-  chrome.runtime.onMessage.addListener(message => {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type === "controlProbe") {
+      sendResponse({
+        ok: true,
+        context_id: context?.id || null,
+        note: note.value,
+        notes_independent: !!independent.checked,
+        visible: host.style.display !== "none",
+        title: title.textContent || "",
+        url: location.href
+      });
+      return;
+    }
     if (message.type === "refreshContext") refresh();
     if (message.type === "linkArmed") flash("Go to the target Codex chat and press Copy chat deep link", 3500);
     if (message.type === "notLinked") flash("This tab has no Codex twin yet");
