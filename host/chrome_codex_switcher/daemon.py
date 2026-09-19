@@ -20,7 +20,7 @@ from .util import canonical_url, db_path, now, overlay_path, parse_codex_link, w
 
 HOST = os.environ.get("CCS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CCS_PORT", "43817"))
-EXTENSION_ID = "mfpomnbkkfklealhaacbnmelpgpggglg"
+EXTENSION_ID = "fignfifoniblkonapihmkfakmlgkbkcf"
 EXTENSION_ORIGIN = f"chrome-extension://{EXTENSION_ID}"
 PENDING_TTL = 120.0
 CLIPBOARD_DUPLICATE_WINDOW = 1.0
