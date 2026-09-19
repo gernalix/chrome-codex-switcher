@@ -355,12 +355,39 @@ class App:
         return {"ok": True, "action": "active_thread_updated", "linked": bool(twin)}
 
     def set_note(self, payload: dict[str, Any]) -> dict[str, Any]:
-        context = self.store.set_note(str(payload["context_id"]), str(payload.get("note", "")))
+        context_id = str(payload["context_id"])
+        surface = "codex" if str(payload.get("surface") or "") == "codex" else "chrome"
+        context = self.store.set_note(
+            context_id,
+            str(payload.get("note", "")),
+            surface=surface,
+        )
         if not context:
             return {"ok": False, "error": "context_not_found"}
         twin = context.get("twin")
         if twin and self.store.get_meta("active_codex_thread") == twin.get("codex_thread"):
-            self._write_overlay_for_thread(twin["codex_thread"])
+            self._write_overlay_for_thread(twin["codex_thread"], codex_title=self._active_codex_title)
+        self.broker.emit("note_changed", {"context_id": context_id, "surface": surface})
+        return {"ok": True, "context": context}
+
+    def set_note_mode(self, payload: dict[str, Any]) -> dict[str, Any]:
+        context_id = str(payload["context_id"])
+        source = "codex" if str(payload.get("source") or "") == "codex" else "chrome"
+        context = self.store.set_note_mode(
+            context_id,
+            bool(payload.get("independent")),
+            source=source,
+            current_note=str(payload["note"]) if "note" in payload else None,
+        )
+        if not context:
+            return {"ok": False, "error": "context_not_found"}
+        twin = context.get("twin")
+        if twin and self.store.get_meta("active_codex_thread") == twin.get("codex_thread"):
+            self._write_overlay_for_thread(twin["codex_thread"], codex_title=self._active_codex_title)
+        self.broker.emit(
+            "note_mode_changed",
+            {"context_id": context_id, "independent": bool(context.get("notes_independent"))},
+        )
         return {"ok": True, "context": context}
 
     def set_ui(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -409,7 +436,14 @@ class App:
                 "codex_thread": thread,
                 "context_id": twin["context_id"],
                 "title": twin.get("title", ""),
-                "note": twin.get("note", ""),
+                "note": (
+                    twin.get("codex_note", "")
+                    if bool(twin.get("notes_independent"))
+                    else twin.get("note", "")
+                ),
+                "chrome_note": twin.get("note", ""),
+                "codex_note": twin.get("codex_note", ""),
+                "notes_independent": bool(twin.get("notes_independent")),
                 "url": twin.get("url", ""),
                 "codex_title": codex_title or self.store.codex_title_for_thread(thread) or "",
                 "reason": "",
@@ -422,6 +456,9 @@ class App:
                 "context_id": None,
                 "title": "",
                 "note": "",
+                "chrome_note": "",
+                "codex_note": "",
+                "notes_independent": False,
                 "url": "",
                 "codex_title": codex_title or self.store.codex_title_for_thread(thread) or "",
                 "reason": "thread_not_linked",
@@ -524,6 +561,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"ok": True, "context": APP.upsert_context(payload)})
             elif parsed.path == "/api/note":
                 self._json(HTTPStatus.OK, APP.set_note(payload))
+            elif parsed.path == "/api/note-mode":
+                self._json(HTTPStatus.OK, APP.set_note_mode(payload))
             elif parsed.path == "/api/ui":
                 self._json(HTTPStatus.OK, APP.set_ui(payload))
             elif parsed.path == "/api/arm-link":
