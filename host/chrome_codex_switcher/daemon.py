@@ -23,6 +23,7 @@ PORT = int(os.environ.get("CCS_PORT", "43817"))
 EXTENSION_ID = "mfpomnbkkfklealhaacbnmelpgpggglg"
 EXTENSION_ORIGIN = f"chrome-extension://{EXTENSION_ID}"
 PENDING_TTL = 120.0
+CLIPBOARD_DUPLICATE_WINDOW = 1.0
 
 
 class App:
@@ -32,6 +33,8 @@ class App:
         self._open_codex = open_codex or self._default_open_codex
         self._clipboard_process: subprocess.Popen | None = None
         self._lock = threading.Lock()
+        self._last_clipboard_thread: str | None = None
+        self._last_clipboard_at = 0.0
         self.settings = self.store.get_meta("settings", {"auto_switch_on_codex_copy": True})
         if "auto_switch_on_codex_copy" not in self.settings:
             self.settings["auto_switch_on_codex_copy"] = True
@@ -110,6 +113,15 @@ class App:
         if not parsed:
             return {"ok": True, "ignored": True}
         thread, deep_link = parsed
+        seen_at = now()
+        with self._lock:
+            if (
+                self._last_clipboard_thread == thread
+                and seen_at - self._last_clipboard_at < CLIPBOARD_DUPLICATE_WINDOW
+            ):
+                return {"ok": True, "ignored": True, "duplicate": True, "thread": thread}
+            self._last_clipboard_thread = thread
+            self._last_clipboard_at = seen_at
         self.store.set_meta("active_codex_thread", thread)
 
         pending = self.store.get_meta("pending_link")
@@ -299,7 +311,10 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/switch-from-chrome":
                 self._json(HTTPStatus.OK, APP.switch_from_chrome(payload))
             elif parsed.path == "/api/clipboard":
-                self._json(HTTPStatus.OK, APP.handle_clipboard(str(payload.get("text", ""))))
+                text = payload.get("text")
+                if text is None:
+                    text = parse_qs(parsed.query).get("text", [""])[0]
+                self._json(HTTPStatus.OK, APP.handle_clipboard(str(text)))
             elif parsed.path == "/api/unlink":
                 self._json(HTTPStatus.OK, APP.unlink(str(payload["context_id"])))
             elif parsed.path == "/api/settings":

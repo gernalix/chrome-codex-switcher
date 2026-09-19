@@ -6,8 +6,16 @@ DEST="$HOME/.local/share/gnome-shell/extensions/$UUID"
 mkdir -p "$(dirname "$DEST")"
 rm -rf "$DEST"
 cp -a "$ROOT/gnome-extension@gernalix.github.com" "$DEST"
-echo "Installed GNOME overlay source to: $DEST"
-echo "GNOME Shell must load the new extension before it can be enabled. On Wayland, log out/in if gnome-extensions enable fails."
+echo "Installed GNOME companion (overlay + clipboard bridge) to: $DEST"
+
 if command -v gnome-extensions >/dev/null; then
   gnome-extensions enable "$UUID" 2>/dev/null || true
+  if gnome-extensions list --enabled 2>/dev/null | grep -Fxq "$UUID"; then
+    echo "GNOME companion: enabled"
+  else
+    echo "GNOME companion: installed but not active yet."
+    echo "On Wayland, log out/in once, then run: gnome-extensions enable $UUID"
+  fi
+else
+  echo "WARNING: gnome-extensions command not found; enable $UUID after installation."
 fi

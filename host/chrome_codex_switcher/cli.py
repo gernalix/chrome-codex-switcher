@@ -48,7 +48,26 @@ def cmd_status(_args: argparse.Namespace) -> int:
     result["codex_handler"] = mime or None
     result["wl_paste"] = shutil.which("wl-paste")
     result["overlay_cache"] = str(overlay_path())
-    result["ok"] = bool(isinstance(result["daemon"], dict) and result["daemon"].get("ok") and mime)
+
+    gnome_bridge = False
+    if shutil.which("gnome-extensions"):
+        try:
+            enabled = subprocess.run(
+                ["gnome-extensions", "list", "--enabled"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            ).stdout.splitlines()
+            gnome_bridge = "chrome-codex-switcher@gernalix.github.com" in enabled
+        except Exception:
+            gnome_bridge = False
+    result["gnome_shell_bridge"] = gnome_bridge
+
+    daemon_ok = bool(isinstance(result["daemon"], dict) and result["daemon"].get("ok"))
+    wl_watch = bool(isinstance(result["daemon"], dict) and result["daemon"].get("clipboard_watch"))
+    result["clipboard_backend"] = "wl-paste" if wl_watch else ("gnome-shell" if gnome_bridge else None)
+    result["ok"] = bool(daemon_ok and mime and result["clipboard_backend"])
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0 if result["ok"] else 1
 

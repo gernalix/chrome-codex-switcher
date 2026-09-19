@@ -28,10 +28,14 @@ chmod 0755 "$BIN_DIR/context-twin"
 systemctl --user daemon-reload
 systemctl --user enable --now chrome-codex-switcher.service
 
+if [[ "${XDG_CURRENT_DESKTOP:-}" == *GNOME* ]] && command -v gnome-extensions >/dev/null; then
+  "$PREFIX/contrib/install-gnome-overlay.sh"
+fi
+
 if ! command -v wl-paste >/dev/null; then
   echo
-  echo "WARNING: wl-paste is missing. Install it for automatic Codex→Chrome switching:"
-  echo "  sudo dnf install wl-clipboard"
+  echo "INFO: wl-paste is missing. This is fine on GNOME when the GNOME companion is enabled."
+  echo "      Other Wayland compositors can use: sudo dnf install wl-clipboard"
 fi
 
 echo

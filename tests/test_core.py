@@ -40,11 +40,21 @@ class AppTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.open_codex.assert_called_once_with("codex://threads/thread-1")
 
+        self.app._last_clipboard_at = 0
         result = self.app.handle_clipboard("codex://threads/thread-1")
         self.assertEqual(result["action"], "focus_chrome")
         _seq, events = self.broker.wait_after(0, 0)
         focus = [event for event in events if event["type"] == "focus_chrome"][-1]
         self.assertEqual(focus["payload"]["context_id"], "ctx-1")
+
+    def test_duplicate_clipboard_delivery_is_ignored(self):
+        self.app.arm_link(self.context)
+        first = self.app.handle_clipboard("codex://threads/thread-1")
+        second = self.app.handle_clipboard("codex://threads/thread-1")
+        self.assertEqual(first["action"], "linked")
+        self.assertTrue(second["duplicate"])
+        _seq, events = self.broker.wait_after(0, 0)
+        self.assertFalse(any(event["type"] == "focus_chrome" for event in events))
 
     def test_one_to_one_relink(self):
         self.app.arm_link(self.context)

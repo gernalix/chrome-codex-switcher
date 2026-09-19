@@ -1,7 +1,11 @@
 import GLib from 'gi://GLib';
+import Meta from 'gi://Meta';
+import Soup from 'gi://Soup?version=3.0';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+
+const DAEMON_CLIPBOARD_URL = 'http://127.0.0.1:43817/api/clipboard';
 
 function isCodexWindow(win) {
     if (!win) return false;
@@ -10,6 +14,10 @@ function isCodexWindow(win) {
         try { if (typeof win[method] === 'function') fields.push(win[method]() || ''); } catch (_) {}
     }
     return fields.join(' ').toLowerCase().match(/codex|chatgpt/);
+}
+
+function isCodexLink(text) {
+    return /^codex:\/\/threads\/[^\s/?#]+(?:[^\s]*)?$/i.test((text || '').trim());
 }
 
 export default class ChromeCodexSwitcherOverlay extends Extension {
@@ -21,15 +29,51 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         this._box.add_child(this._title);
         this._box.add_child(this._note);
         Main.uiGroup.add_child(this._box);
-        this._timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => { this._refresh(); return GLib.SOURCE_CONTINUE; });
+
+        this._http = new Soup.Session();
+        this._clipboard = St.Clipboard.get_default();
+        this._selection = global.display.get_selection();
+        this._selectionChangedId = this._selection.connect('owner-changed', (_selection, type) => {
+            if (type !== Meta.SelectionType.CLIPBOARD) return;
+            this._clipboard.get_text(St.ClipboardType.CLIPBOARD, (_clipboard, text) => {
+                const value = (text || '').trim();
+                if (isCodexLink(value)) this._forwardCodexLink(value);
+            });
+        });
+
+        this._timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+            this._refresh();
+            return GLib.SOURCE_CONTINUE;
+        });
         this._refresh();
     }
 
     disable() {
         if (this._timer) GLib.source_remove(this._timer);
         this._timer = null;
+        if (this._selection && this._selectionChangedId) this._selection.disconnect(this._selectionChangedId);
+        this._selectionChangedId = null;
+        this._selection = null;
+        this._clipboard = null;
+        this._http = null;
         this._box?.destroy();
         this._box = null;
+    }
+
+    _forwardCodexLink(text) {
+        try {
+            const url = `${DAEMON_CLIPBOARD_URL}?text=${encodeURIComponent(text)}`;
+            const message = Soup.Message.new('POST', url);
+            this._http.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null, (session, result) => {
+                try {
+                    session.send_and_read_finish(result);
+                } catch (error) {
+                    console.debug(`chrome-codex-switcher: clipboard bridge unavailable: ${error}`);
+                }
+            });
+        } catch (error) {
+            console.debug(`chrome-codex-switcher: clipboard bridge failed: ${error}`);
+        }
     }
 
     _refresh() {
