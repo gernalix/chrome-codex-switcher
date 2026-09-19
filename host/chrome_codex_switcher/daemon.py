@@ -319,6 +319,7 @@ class App:
             "armed_at": now(),
             "expires_at": now() + PROMPT_PENDING_TTL,
         }
+        self.store.delete_meta("pending_prompt_codex")
         self.store.set_meta("pending_prompt", pending)
         self.broker.emit("prompt_armed", pending)
         return {"ok": True, "pending": pending}
@@ -369,6 +370,7 @@ class App:
                     codex_deep_link=deep_link,
                 )
                 stage = "chrome"
+            self.store.delete_meta("pending_prompt")
             self.store.delete_meta("pending_prompt_codex")
             self.broker.emit("prompt_linked", binding)
             return {
@@ -384,6 +386,7 @@ class App:
             "expires_at": now() + PROMPT_PENDING_TTL,
             "force": force,
         }
+        self.store.delete_meta("pending_prompt")
         self.store.set_meta("pending_prompt_codex", pending)
         self.broker.emit("prompt_codex_armed", pending)
         return {
@@ -499,6 +502,7 @@ class App:
                 if context_id:
                     binding = self.store.link_prompt(prompt_id, context_id, thread, deep_link)
                     self.store.delete_meta("pending_prompt")
+                    self.store.delete_meta("pending_prompt_codex")
                     self.broker.emit("prompt_linked", binding)
                     self.broker.emit("linked", {"context_id": context_id, "codex_thread": thread, "codex_deep_link": deep_link})
                     paired_prompt = True
