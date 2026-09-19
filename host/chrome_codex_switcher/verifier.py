@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import time
 from pathlib import Path
 from typing import Callable, Any
@@ -78,6 +79,244 @@ def discover_codex_session(
         "session_id": session_id,
         "deep_link": f"codex://threads/{session_id}",
         "source_path": str(path),
+    }
+
+
+
+def _api_call(request: Callable[..., dict], path: str, payload: dict | None = None, timeout: float = 4.0) -> dict:
+    return request(path, payload, timeout=timeout)
+
+
+def _control_probe(
+    prompt_id: str,
+    *,
+    request: Callable[..., dict],
+    action: str = "probe",
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    started = _api_call(
+        request,
+        "/api/prompt/control",
+        {"prompt_id": prompt_id, "action": action},
+    )
+    if not started.get("ok"):
+        return {"ok": False, "error": started.get("error") or "control_start_failed"}
+    request_id = str(started.get("request_id") or "")
+    if not request_id:
+        return {"ok": False, "error": "control_request_id_missing"}
+    deadline = time.monotonic() + timeout
+    last: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        last = _api_call(request, f"/api/control/ack?request_id={request_id}")
+        if last.get("ok") and isinstance(last.get("ack"), dict):
+            return last["ack"]
+        time.sleep(0.2)
+    return {"ok": False, "error": "control_ack_timeout", "last": last}
+
+
+def verify_binding(
+    prompt_id: str,
+    *,
+    request: Callable[..., dict],
+) -> dict[str, Any]:
+    if not PROMPT_ID_RE.fullmatch(str(prompt_id)):
+        raise ValueError("invalid_prompt_id")
+    response = _api_call(request, f"/api/prompt?prompt_id={prompt_id}")
+    binding = response.get("binding") if response.get("ok") else None
+    if not isinstance(binding, dict):
+        return {"prompt_id": prompt_id, "result": "BLOCKED", "error": "binding_missing"}
+    context_id = str(binding.get("context_id") or "")
+    thread = str(binding.get("codex_thread") or "")
+    deep_link = str(binding.get("codex_deep_link") or "")
+    if not context_id or not thread or not deep_link:
+        return {
+            "prompt_id": prompt_id,
+            "result": "BLOCKED",
+            "error": "binding_incomplete",
+            "binding": binding,
+        }
+    context_response = _api_call(request, f"/api/context?context_id={context_id}")
+    context = context_response.get("context") if context_response.get("ok") else None
+    twin = context.get("twin") if isinstance(context, dict) else None
+    consistent = bool(
+        isinstance(context, dict)
+        and isinstance(twin, dict)
+        and twin.get("codex_thread") == thread
+        and twin.get("codex_deep_link") == deep_link
+    )
+    return {
+        "prompt_id": prompt_id,
+        "result": "PASS" if consistent else "BLOCKED",
+        "binding": binding,
+        "context": context,
+        "checks": {
+            "context_id": bool(context_id),
+            "codex_thread": bool(thread),
+            "deep_link": bool(deep_link),
+            "twin_consistent": consistent,
+        },
+        "error": None if consistent else "context_twin_mismatch",
+    }
+
+
+def verify_note(
+    prompt_id: str,
+    *,
+    request: Callable[..., dict],
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    binding = verify_binding(prompt_id, request=request)
+    if binding.get("result") != "PASS":
+        return {
+            "prompt_id": prompt_id,
+            "result": "BLOCKED",
+            "error": binding.get("error"),
+            "binding": binding,
+        }
+    context = binding["context"]
+    independent = bool(context.get("notes_independent"))
+    chrome_note = str(context.get("note") or "")
+    codex_note = str(context.get("codex_note") or "")
+    stored_consistent = independent or chrome_note == codex_note
+    probe = _control_probe(prompt_id, request=request, action="probe", timeout=timeout)
+    rendered = probe.get("rendered") if isinstance(probe, dict) else None
+    chrome_rendered = bool(
+        probe.get("ok")
+        and isinstance(rendered, dict)
+        and rendered.get("context_id") == context.get("id")
+        and str(rendered.get("note") or "") == chrome_note
+    )
+    gnome_response = _api_call(request, "/api/gnome-runtime")
+    gnome = gnome_response.get("gnome_runtime") if gnome_response.get("ok") else None
+    gnome_check: bool | None = None
+    if isinstance(gnome, dict) and gnome.get("visible") and gnome.get("context_id") == context.get("id"):
+        expected = codex_note if independent else chrome_note
+        gnome_check = str(gnome.get("note") or "") == expected
+    passed = stored_consistent and chrome_rendered and gnome_check is not False
+    return {
+        "prompt_id": prompt_id,
+        "result": "PASS" if passed else "BLOCKED",
+        "mode": "split" if independent else "shared",
+        "checks": {
+            "stored_consistent": stored_consistent,
+            "chrome_rendered": chrome_rendered,
+            "gnome_rendered_if_active": gnome_check,
+        },
+        "error": None if passed else "note_state_mismatch",
+    }
+
+
+def verify_overlay(
+    *,
+    request: Callable[..., dict],
+) -> dict[str, Any]:
+    health = _api_call(request, "/api/health")
+    overlay = _read_overlay()
+    gnome_response = _api_call(request, "/api/gnome-runtime")
+    gnome = gnome_response.get("gnome_runtime") if gnome_response.get("ok") else None
+    a11y = bool(health.get("codex_a11y_watch") and not health.get("codex_a11y_error"))
+    overlay_valid = True
+    if overlay.get("visible"):
+        overlay_valid = bool(overlay.get("context_id") and overlay.get("codex_thread"))
+    gnome_consistent = True
+    if isinstance(gnome, dict):
+        if gnome.get("visible"):
+            gnome_consistent = bool(
+                overlay.get("visible")
+                and gnome.get("context_id") == overlay.get("context_id")
+                and gnome.get("codex_thread") == overlay.get("codex_thread")
+            )
+        elif not gnome.get("focused_codex"):
+            gnome_consistent = not bool(gnome.get("visible"))
+    passed = a11y and overlay_valid and gnome_consistent
+    return {
+        "result": "PASS" if passed else "BLOCKED",
+        "checks": {
+            "a11y": a11y,
+            "overlay_valid": overlay_valid,
+            "gnome_consistent": gnome_consistent,
+        },
+        "overlay": overlay,
+        "gnome_runtime": gnome,
+        "error": None if passed else "overlay_state_mismatch",
+    }
+
+
+def verify_workflowy(
+    prompt_id: str,
+    *,
+    request: Callable[..., dict],
+) -> dict[str, Any]:
+    if not PROMPT_ID_RE.fullmatch(str(prompt_id)):
+        raise ValueError("invalid_prompt_id")
+    text = _api_call(request, f"/api/prompt/text?prompt_id={prompt_id}")
+    binding_response = _api_call(request, f"/api/prompt?prompt_id={prompt_id}")
+    binding = binding_response.get("binding") if binding_response.get("ok") else None
+    health = _api_call(request, "/api/health")
+    extension = health.get("extension_runtime") if isinstance(health, dict) else None
+    extension_fresh = bool(
+        isinstance(extension, dict)
+        and extension.get("version")
+        and time.time() - float(extension.get("seen_at") or 0) <= 90
+    )
+    actions = {
+        "copy": bool(text.get("ok") and text.get("prompt_text")),
+        "launch": extension_fresh,
+        "chrome": bool(isinstance(binding, dict) and binding.get("context_id")),
+        "codex": bool(isinstance(binding, dict) and binding.get("codex_deep_link")),
+    }
+    passed = all(actions.values())
+    return {
+        "prompt_id": prompt_id,
+        "result": "PASS" if passed else "BLOCKED",
+        "actions": actions,
+        "error": None if passed else "workflowy_action_unavailable",
+    }
+
+
+def self_test(
+    *,
+    request: Callable[..., dict],
+) -> dict[str, Any]:
+    health = _api_call(request, "/api/health")
+    extension = health.get("extension_runtime") if isinstance(health, dict) else None
+    extension_fresh = bool(
+        isinstance(extension, dict)
+        and extension.get("version")
+        and time.time() - float(extension.get("seen_at") or 0) <= 90
+    )
+    gnome_response = _api_call(request, "/api/gnome-runtime")
+    gnome = gnome_response.get("gnome_runtime") if gnome_response.get("ok") else None
+    gnome_fresh = bool(
+        isinstance(gnome, dict)
+        and time.time() - float(gnome.get("seen_at") or 0) <= 10
+    )
+    try:
+        with socket.create_connection(("127.0.0.1", 8765), timeout=1.0):
+            workflowy_bridge = True
+    except OSError:
+        workflowy_bridge = False
+    contexts = _api_call(request, "/api/list")
+    events = _api_call(request, "/api/events?after=0&timeout=0")
+    gates = {
+        "daemon": bool(health.get("ok")),
+        "extension_heartbeat": extension_fresh,
+        "gnome_companion": gnome_fresh,
+        "clipboard_backend": bool(
+            health.get("xfixes_watch") or health.get("clipboard_watch") or gnome_fresh
+        ),
+        "atspi": bool(health.get("codex_a11y_watch") and not health.get("codex_a11y_error")),
+        "localhost_api": bool(health.get("ok")),
+        "sqlite": bool(contexts.get("ok")),
+        "workflowy_bridge": workflowy_bridge,
+        "overlay_cache": overlay_path().exists(),
+        "event_broker": bool(events.get("ok")),
+    }
+    passed = all(gates.values())
+    return {
+        "result": "PASS" if passed else "BLOCKED",
+        "gates": gates,
+        "error": None if passed else "self_test_gate_failed",
     }
 
 
