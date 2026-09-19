@@ -266,6 +266,17 @@ class Store:
             ).fetchone()
             return dict(row) if row else None
 
+    def list_prompt_bindings(self) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT p.prompt_id,p.context_id,p.codex_thread,p.codex_deep_link,
+                          p.created_at,p.updated_at,c.url,c.title,c.note
+                   FROM prompt_bindings p
+                   LEFT JOIN contexts c ON c.id=p.context_id
+                   ORDER BY p.prompt_id"""
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def prompt_by_context(self, context_id: str) -> dict[str, Any] | None:
         with self._connect() as db:
             row = db.execute(
