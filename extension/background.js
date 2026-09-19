@@ -279,13 +279,22 @@ async function controlChrome(payload) {
   if (!tab) return {ok: false, error: "chrome_tab_not_found", context_id: contextPayload.context_id};
 
   let rendered = null;
-  try {
-    rendered = await chrome.tabs.sendMessage(tab.id, {type: "controlProbe"});
-  } catch (error) {
+  let lastError = null;
+  const attempts = action === "ensure" ? 20 : 3;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      rendered = await chrome.tabs.sendMessage(tab.id, {type: "controlProbe"});
+      if (rendered?.ok) break;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  if (!rendered?.ok) {
     return {
       ok: false,
       error: "chrome_content_unreachable",
-      detail: String(error?.message || error),
+      detail: String(lastError?.message || lastError || "no_probe_response"),
       context_id: contextPayload.context_id,
       tab_id: tab.id
     };
