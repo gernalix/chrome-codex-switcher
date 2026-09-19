@@ -68,20 +68,24 @@ class App:
             print(f"chrome-codex-switcher: clipboard watcher failed: {exc}", file=sys.stderr)
 
     def _read_xfixes_clipboard(self) -> None:
-        try:
-            proc = subprocess.run(
-                ["wl-paste", "--type", "text", "--no-newline"],
-                capture_output=True,
-                timeout=2,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return
-        if proc.returncode or len(proc.stdout) > 4096:
-            return
-        text = proc.stdout.decode("utf-8", errors="replace").strip()
-        if text.lower().startswith("codex://threads/") and "\n" not in text:
-            self.handle_clipboard(text)
+        # XWayland can announce the new owner before its Wayland text offer is ready.
+        for delay in (0.15, 0.25, 0.35):
+            time.sleep(delay)
+            try:
+                proc = subprocess.run(
+                    ["wl-paste", "--type", "text", "--no-newline"],
+                    capture_output=True,
+                    timeout=2,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if proc.returncode or len(proc.stdout) > 4096:
+                continue
+            text = proc.stdout.decode("utf-8", errors="replace").strip()
+            if text.lower().startswith("codex://threads/") and "\n" not in text:
+                self.handle_clipboard(text)
+                return
 
     def stop_clipboard_watch(self) -> None:
         proc = self._clipboard_process
