@@ -373,9 +373,15 @@ class App:
     def set_note_mode(self, payload: dict[str, Any]) -> dict[str, Any]:
         context_id = str(payload["context_id"])
         source = "codex" if str(payload.get("source") or "") == "codex" else "chrome"
+        raw_independent = payload.get("independent")
+        independent = (
+            raw_independent
+            if isinstance(raw_independent, bool)
+            else str(raw_independent or "").strip().lower() in {"1", "true", "yes", "on"}
+        )
         context = self.store.set_note_mode(
             context_id,
-            bool(payload.get("independent")),
+            independent,
             source=source,
             current_note=str(payload["note"]) if "note" in payload else None,
         )
@@ -505,6 +511,10 @@ class Handler(BaseHTTPRequestHandler):
         if length > 1_000_000:
             raise ValueError("payload_too_large")
         raw = self.rfile.read(length) if length else b"{}"
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type == "application/x-www-form-urlencoded":
+            parsed = parse_qs(raw.decode("utf-8"), keep_blank_values=True)
+            return {key: values[-1] if values else "" for key, values in parsed.items()}
         value = json.loads(raw.decode("utf-8"))
         if not isinstance(value, dict):
             raise ValueError("object_required")
