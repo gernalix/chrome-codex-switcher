@@ -11,8 +11,7 @@
     "alarms"
   ],
   "host_permissions": [
-    "http://127.0.0.1:43817/*",
-    "http://127.0.0.1:8765/*"
+    "http://127.0.0.1:43817/*"
   ],
   "background": {
     "service_worker": "background.js"
