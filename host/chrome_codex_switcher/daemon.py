@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import re
 import signal
 import subprocess
 import sys
@@ -25,6 +26,8 @@ EXTENSION_ID = "mfpomnbkkfklealhaacbnmelpgpggglg"
 EXTENSION_ORIGIN = f"chrome-extension://{EXTENSION_ID}"
 PENDING_TTL = 120.0
 CLIPBOARD_DUPLICATE_WINDOW = 1.0
+PROMPT_ID_RE = re.compile(r"\d{6}\Z")
+PROMPT_PENDING_TTL = 10 * 60.0
 
 
 class App:
@@ -107,6 +110,61 @@ class App:
             "auto_switch_on_codex_copy": bool(self.settings.get("auto_switch_on_codex_copy", True)),
         }
 
+
+    @staticmethod
+    def _prompt_id(value: Any) -> str:
+        prompt_id = str(value or "").strip()
+        if not PROMPT_ID_RE.fullmatch(prompt_id):
+            raise ValueError("invalid_prompt_id")
+        return prompt_id
+
+    def prompt_binding(self, prompt_id: str) -> dict[str, Any]:
+        prompt_id = self._prompt_id(prompt_id)
+        binding = self.store.prompt_binding(prompt_id)
+        return {"ok": bool(binding), "binding": binding}
+
+    def bind_prompt(self, payload: dict[str, Any]) -> dict[str, Any]:
+        prompt_id = self._prompt_id(payload.get("prompt_id"))
+        context_id = str(payload.get("context_id") or "").strip() or None
+        if context_id:
+            url = canonical_url(str(payload.get("url") or ""))
+            title = str(payload.get("title") or "")
+            if url:
+                self.store.upsert_context(context_id, url, title)
+        binding = self.store.bind_prompt(prompt_id, context_id=context_id)
+        self.broker.emit("prompt_bound", {"prompt_id": prompt_id, "context_id": context_id})
+        return {"ok": True, "binding": binding}
+
+    def arm_prompt(self, payload: dict[str, Any]) -> dict[str, Any]:
+        prompt_id = self._prompt_id(payload.get("prompt_id"))
+        context_id = str(payload.get("context_id") or "").strip() or None
+        if context_id:
+            self.bind_prompt(payload)
+        else:
+            existing = self.store.prompt_binding(prompt_id)
+            context_id = (
+                str(existing.get("context_id"))
+                if existing and existing.get("context_id")
+                else None
+            )
+        pending = {
+            "prompt_id": prompt_id,
+            "context_id": context_id,
+            "armed_at": now(),
+            "expires_at": now() + PROMPT_PENDING_TTL,
+        }
+        self.store.set_meta("pending_prompt", pending)
+        self.broker.emit("prompt_armed", pending)
+        return {"ok": True, "pending": pending}
+
+    def open_prompt_codex(self, payload: dict[str, Any]) -> dict[str, Any]:
+        prompt_id = self._prompt_id(payload.get("prompt_id"))
+        binding = self.store.prompt_binding(prompt_id)
+        if not binding or not binding.get("codex_deep_link"):
+            return {"ok": False, "error": "codex_not_linked"}
+        self._open_codex(str(binding["codex_deep_link"]))
+        return {"ok": True, "binding": binding}
+
     def upsert_context(self, payload: dict[str, Any]) -> dict[str, Any]:
         context_id = str(payload["context_id"])
         url = canonical_url(str(payload.get("url", "")))
@@ -151,6 +209,24 @@ class App:
             self._last_clipboard_thread = thread
             self._last_clipboard_at = seen_at
         self.store.set_meta("active_codex_thread", thread)
+
+        pending_prompt = self.store.get_meta("pending_prompt")
+        if pending_prompt:
+            if float(pending_prompt.get("expires_at", 0)) >= now():
+                prompt_id = self._prompt_id(pending_prompt.get("prompt_id"))
+                context_id = str(pending_prompt.get("context_id") or "").strip() or None
+                if context_id and self.store.get_context(context_id):
+                    self.store.link(context_id, thread, deep_link)
+                binding = self.store.bind_prompt(
+                    prompt_id,
+                    context_id=context_id,
+                    codex_thread=thread,
+                    codex_deep_link=deep_link,
+                )
+                self.store.delete_meta("pending_prompt")
+                self.broker.emit("prompt_linked", binding)
+            else:
+                self.store.delete_meta("pending_prompt")
 
         pending = self.store.get_meta("pending_link")
         if pending:
@@ -321,6 +397,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"ok": bool(context), "context": context})
             elif parsed.path == "/api/list":
                 self._json(HTTPStatus.OK, {"ok": True, "contexts": APP.store.list_contexts()})
+            elif parsed.path == "/api/prompt":
+                prompt_id = query.get("prompt_id", [""])[0]
+                self._json(HTTPStatus.OK, APP.prompt_binding(prompt_id))
+            elif parsed.path == "/api/prompts":
+                self._json(HTTPStatus.OK, {"ok": True, "bindings": APP.store.list_prompt_bindings()})
             elif parsed.path == "/api/events":
                 after = int(query.get("after", ["0"])[0])
                 timeout = min(28.0, max(0.0, float(query.get("timeout", ["25"])[0])))
@@ -358,6 +439,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, APP.unlink(str(payload["context_id"])))
             elif parsed.path == "/api/settings":
                 self._json(HTTPStatus.OK, APP.set_settings(payload))
+            elif parsed.path == "/api/prompt/bind":
+                self._json(HTTPStatus.OK, APP.bind_prompt(payload))
+            elif parsed.path == "/api/prompt/arm":
+                self._json(HTTPStatus.OK, APP.arm_prompt(payload))
+            elif parsed.path == "/api/prompt/open-codex":
+                self._json(HTTPStatus.OK, APP.open_prompt_codex(payload))
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
         except (ValueError, KeyError, json.JSONDecodeError) as exc:

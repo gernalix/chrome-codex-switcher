@@ -33,6 +33,15 @@ CREATE TABLE IF NOT EXISTS twins (
     updated_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS prompt_bindings (
+    prompt_id TEXT PRIMARY KEY,
+    context_id TEXT UNIQUE REFERENCES contexts(id) ON DELETE SET NULL,
+    codex_thread TEXT UNIQUE,
+    codex_deep_link TEXT UNIQUE,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -120,12 +129,25 @@ class Store:
 
     def link(self, context_id: str, thread: str, deep_link: str) -> dict[str, Any]:
         ts = now()
+        prompt_id: str | None = None
         with self._connect() as db:
             # Maintain one-to-one semantics in both directions.
             db.execute("DELETE FROM twins WHERE context_id=? OR codex_thread=?", (context_id, thread))
             db.execute(
                 "INSERT INTO twins(codex_thread,codex_deep_link,context_id,created_at,updated_at) VALUES(?,?,?,?,?)",
                 (thread, deep_link, context_id, ts, ts),
+            )
+            binding = db.execute(
+                "SELECT prompt_id FROM prompt_bindings WHERE context_id=?",
+                (context_id,),
+            ).fetchone()
+            prompt_id = str(binding["prompt_id"]) if binding else None
+        if prompt_id:
+            self.bind_prompt(
+                prompt_id,
+                context_id=context_id,
+                codex_thread=thread,
+                codex_deep_link=deep_link,
             )
         return self.get_context(context_id) or {}
 
@@ -182,6 +204,86 @@ class Store:
                 item["twin"] = None
             result.append(item)
         return result
+
+
+    def bind_prompt(
+        self,
+        prompt_id: str,
+        *,
+        context_id: str | None = None,
+        codex_thread: str | None = None,
+        codex_deep_link: str | None = None,
+    ) -> dict[str, Any]:
+        ts = now()
+        with self._connect() as db:
+            current = db.execute(
+                "SELECT * FROM prompt_bindings WHERE prompt_id=?",
+                (prompt_id,),
+            ).fetchone()
+            created = float(current["created_at"]) if current else ts
+            existing_context = str(current["context_id"]) if current and current["context_id"] else None
+            existing_thread = str(current["codex_thread"]) if current and current["codex_thread"] else None
+            existing_link = str(current["codex_deep_link"]) if current and current["codex_deep_link"] else None
+            if context_id is not None:
+                db.execute(
+                    "DELETE FROM prompt_bindings WHERE prompt_id<>? AND context_id=?",
+                    (prompt_id, context_id),
+                )
+            if codex_thread is not None:
+                db.execute(
+                    "DELETE FROM prompt_bindings WHERE prompt_id<>? AND codex_thread=?",
+                    (prompt_id, codex_thread),
+                )
+            db.execute(
+                """INSERT INTO prompt_bindings(
+                     prompt_id,context_id,codex_thread,codex_deep_link,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?)
+                   ON CONFLICT(prompt_id) DO UPDATE SET
+                     context_id=excluded.context_id,
+                     codex_thread=excluded.codex_thread,
+                     codex_deep_link=excluded.codex_deep_link,
+                     updated_at=excluded.updated_at""",
+                (
+                    prompt_id,
+                    context_id if context_id is not None else existing_context,
+                    codex_thread if codex_thread is not None else existing_thread,
+                    codex_deep_link if codex_deep_link is not None else existing_link,
+                    created,
+                    ts,
+                ),
+            )
+        return self.prompt_binding(prompt_id) or {"prompt_id": prompt_id}
+
+    def prompt_binding(self, prompt_id: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT p.prompt_id,p.context_id,p.codex_thread,p.codex_deep_link,
+                          p.created_at,p.updated_at,c.url,c.title,c.note
+                   FROM prompt_bindings p
+                   LEFT JOIN contexts c ON c.id=p.context_id
+                   WHERE p.prompt_id=?""",
+                (prompt_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_prompt_bindings(self) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT p.prompt_id,p.context_id,p.codex_thread,p.codex_deep_link,
+                          p.created_at,p.updated_at,c.url,c.title,c.note
+                   FROM prompt_bindings p
+                   LEFT JOIN contexts c ON c.id=p.context_id
+                   ORDER BY p.prompt_id"""
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def prompt_by_context(self, context_id: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM prompt_bindings WHERE context_id=?",
+                (context_id,),
+            ).fetchone()
+            return dict(row) if row else None
 
     def set_meta(self, key: str, value: Any) -> None:
         raw = json.dumps(value, separators=(",", ":"))

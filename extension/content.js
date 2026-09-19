@@ -140,6 +140,43 @@
     }
   });
 
+  async function copyPrompt(promptId) {
+    const result = await send({type: "prompt:text", promptId});
+    if (!result?.ok || !result.promptText) throw new Error(result?.error || "prompt unavailable");
+    await navigator.clipboard.writeText(result.promptText);
+  }
+
+  if (location.hostname === "workflowy.com" || location.hostname.endsWith(".workflowy.com")) {
+    document.addEventListener("click", async event => {
+      const anchor = event.target.closest?.("a");
+      if (!anchor?.href) return;
+      let url;
+      try { url = new URL(anchor.href); } catch { return; }
+      if (url.origin !== "http://127.0.0.1:43817") return;
+      const match = url.pathname.match(/^\/ui\/prompt\/(\d{6})\/(copy|launch|chrome|codex)$/);
+      if (!match) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const [, promptId, action] = match;
+      try {
+        if (action === "copy") {
+          await copyPrompt(promptId);
+        } else if (action === "launch") {
+          await copyPrompt(promptId);
+          await send({type: "prompt:launch", promptId});
+        } else if (action === "chrome") {
+          const result = await send({type: "prompt:focus", promptId});
+          if (!result?.ok) throw new Error(result?.error || "Chrome tab unavailable");
+        } else if (action === "codex") {
+          const result = await send({type: "prompt:codex", promptId});
+          if (!result?.ok) throw new Error(result?.error || "Codex chat unavailable");
+        }
+      } catch (error) {
+        flash(`Prompt action failed: ${String(error?.message || error)}`, 3500);
+      }
+    }, true);
+  }
+
   setInterval(() => {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
