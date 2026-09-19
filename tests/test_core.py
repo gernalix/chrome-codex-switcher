@@ -64,6 +64,37 @@ class AppTests(unittest.TestCase):
         self.assertIsNone(self.store.twin_by_thread("one"))
         self.assertEqual(self.store.twin_by_thread("two")["context_id"], "ctx-1")
 
+    def test_prompt_binding_is_explicit_and_survives_codex_pairing(self):
+        self.app.upsert_context(self.context)
+        bound = self.app.bind_prompt({**self.context, "prompt_id": "514458"})
+        self.assertTrue(bound["ok"])
+        self.assertEqual("ctx-1", self.store.prompt_binding("514458")["context_id"])
+
+        armed = self.app.arm_prompt({**self.context, "prompt_id": "514458"})
+        self.assertTrue(armed["ok"])
+        linked = self.app.handle_clipboard("codex://threads/thread-prompt")
+        self.assertIn(linked["action"], {"linked", "active_thread_updated"})
+        binding = self.store.prompt_binding("514458")
+        self.assertEqual("thread-prompt", binding["codex_thread"])
+        self.assertEqual("codex://threads/thread-prompt", binding["codex_deep_link"])
+        self.assertEqual("ctx-1", self.store.twin_by_thread("thread-prompt")["context_id"])
+
+    def test_open_prompt_codex_uses_bound_deep_link(self):
+        self.app.upsert_context(self.context)
+        self.store.bind_prompt(
+            "514458",
+            context_id="ctx-1",
+            codex_thread="thread-prompt",
+            codex_deep_link="codex://threads/thread-prompt",
+        )
+        result = self.app.open_prompt_codex({"prompt_id": "514458"})
+        self.assertTrue(result["ok"])
+        self.open_codex.assert_called_once_with("codex://threads/thread-prompt")
+
+    def test_invalid_prompt_id_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.app.bind_prompt({**self.context, "prompt_id": "abc"})
+
     def test_note_is_persistent(self):
         self.app.upsert_context(self.context)
         result = self.app.set_note({"context_id": "ctx-1", "note": "Fix PersonalHub"})
