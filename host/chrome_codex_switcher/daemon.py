@@ -393,6 +393,8 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/prompt":
                 prompt_id = query.get("prompt_id", [""])[0]
                 self._json(HTTPStatus.OK, APP.prompt_binding(prompt_id))
+            elif parsed.path == "/api/prompts":
+                self._json(HTTPStatus.OK, {"ok": True, "bindings": APP.store.list_prompt_bindings()})
             elif parsed.path == "/api/events":
                 after = int(query.get("after", ["0"])[0])
                 timeout = min(28.0, max(0.0, float(query.get("timeout", ["25"])[0])))
