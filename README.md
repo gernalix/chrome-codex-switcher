@@ -6,6 +6,7 @@ Fedora/Wayland workflow helper for pairing a specific Chrome tab with a specific
 
 - Adds a movable/resizable floating note to normal Chrome pages.
 - Pairs one Chrome tab-context with one `codex://threads/...` Codex thread.
+- Optionally binds that pair to an explicit six-digit roadmap `PROMPT_ID`; the ID is never inferred from URLs, tab titles or Codex deep links.
 - Chrome → Codex: one extension shortcut opens the exact paired Codex thread with `gio open`.
 - Codex → Chrome: press Codex Desktop's **Copy chat deep link** shortcut; on GNOME Wayland the GNOME companion observes the clipboard change inside the compositor and forwards the `codex://threads/...` value to the daemon, which focuses the exact paired Chrome tab.
 - Persists notes and pairings in SQLite.
@@ -149,3 +150,22 @@ The clipboard access is deliberate and limited to values matching `codex://threa
 PYTHONPATH=host python3 -m unittest discover -s tests -v
 python3 -m py_compile host/chrome_codex_switcher/*.py
 ```
+
+
+## Workflowy roadmap cockpit
+
+The localhost API supports explicit roadmap bindings:
+
+- `GET /api/prompt?prompt_id=514458` returns the current Chrome/Codex binding.
+- `POST /api/prompt/bind` binds a known Chrome context to that exact PROMPT_ID.
+- `POST /api/prompt/arm` marks that exact prompt as the next Codex deep-link association.
+- `POST /api/prompt/open-codex` opens the exact bound Codex thread.
+
+The Chrome extension recognizes Workflowy action links under
+`http://127.0.0.1:43817/ui/prompt/<PROMPT_ID>/...`. From Workflowy it can copy
+the canonical prompt through the local Workflowy bridge, open/focus the prompt's
+ChatGPT tab in the same Chrome window, and open the exact Codex thread.
+
+If a prompt has no Chrome context yet, the launch action creates one and stores
+the PROMPT_ID explicitly before Codex pairing. The PROMPT_ID is never guessed
+from the browser URL or the Codex deep link.
