@@ -11,12 +11,13 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .util import overlay_path
+from .verifier import verify_prompt
 
 PORT = int(os.environ.get("CCS_PORT", "43817"))
 BASE = f"http://127.0.0.1:{PORT}"
 
 
-def request(path: str, payload: dict | None = None) -> dict:
+def request(path: str, payload: dict | None = None, *, timeout: float = 4.0) -> dict:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = Request(
         BASE + path,
@@ -24,7 +25,7 @@ def request(path: str, payload: dict | None = None) -> dict:
         method="POST" if payload is not None else "GET",
         headers={"Content-Type": "application/json"} if payload is not None else {},
     )
-    with urlopen(req, timeout=4) as response:
+    with urlopen(req, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -105,6 +106,18 @@ def cmd_auto_switch(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_verify_prompt(args: argparse.Namespace) -> int:
+    result = verify_prompt(
+        args.prompt_id,
+        request=request,
+        full=args.full,
+        timeout=args.timeout,
+        session_root=args.session_root,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result.get("result") == "PASS" else 2
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="context-twin")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -115,6 +128,16 @@ def main() -> None:
     auto = sub.add_parser("auto-switch")
     auto.add_argument("value", choices=["on", "off"])
     auto.set_defaults(func=cmd_auto_switch)
+
+    verify = sub.add_parser(
+        "verify-prompt",
+        help="Programmatically verify one roadmap prompt's Chrome/Codex runtime binding",
+    )
+    verify.add_argument("prompt_id")
+    verify.add_argument("--full", action="store_true", help="Exercise navigation, overlay and shared-note propagation with automatic restore")
+    verify.add_argument("--timeout", type=float, default=12.0)
+    verify.add_argument("--session-root", type=Path, default=Path("~/.codex/sessions"))
+    verify.set_defaults(func=cmd_verify_prompt)
     args = parser.parse_args()
     try:
         raise SystemExit(args.func(args))

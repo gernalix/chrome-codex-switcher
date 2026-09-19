@@ -31,6 +31,8 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         this._noteDirty = false;
         this._applyingState = false;
         this._saveTimer = null;
+        this._lastRuntimeSignature = null;
+        this._lastRuntimeReportAt = 0;
 
         this._box = new St.BoxLayout({
             vertical: true,
@@ -241,11 +243,29 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         }
     }
 
+    _reportRuntime(state, focusedCodex, visible) {
+        const payload = {
+            focused_codex: focusedCodex ? '1' : '0',
+            visible: visible ? '1' : '0',
+            context_id: String(state?.context_id || ''),
+            codex_thread: String(state?.codex_thread || ''),
+            note: visible ? String(this._noteText?.get_text?.() || '') : String(state?.note || ''),
+            notes_independent: state?.notes_independent ? '1' : '0',
+        };
+        const signature = JSON.stringify(payload);
+        const nowMs = Date.now();
+        if (signature === this._lastRuntimeSignature && nowMs - this._lastRuntimeReportAt < 1500) return;
+        this._lastRuntimeSignature = signature;
+        this._lastRuntimeReportAt = nowMs;
+        this._postForm('/api/gnome-heartbeat', payload);
+    }
+
     _refresh() {
         this._focusRequestedChrome();
         const win = global.display.focus_window;
         if (!isCodexWindow(win)) {
             this._box.hide();
+            this._reportRuntime(null, false, false);
             return;
         }
         const path = GLib.build_filenamev([GLib.get_user_cache_dir(), 'chrome-codex-switcher', 'overlay.json']);
@@ -253,6 +273,7 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
             const [ok, bytes] = GLib.file_get_contents(path);
             if (!ok) {
                 this._box.hide();
+                this._reportRuntime(null, true, false);
                 return;
             }
             const state = JSON.parse(new TextDecoder().decode(bytes));
@@ -260,6 +281,7 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
                 this._contextId = null;
                 this._noteDirty = false;
                 this._box.hide();
+                this._reportRuntime(state, true, false);
                 return;
             }
             this._applyOverlayState(state);
@@ -271,8 +293,10 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
                 rect.y + 72,
             );
             this._box.show();
+            this._reportRuntime(state, true, true);
         } catch (_) {
             this._box.hide();
+            this._reportRuntime(null, true, false);
         }
     }
 

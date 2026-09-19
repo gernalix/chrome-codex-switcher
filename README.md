@@ -120,7 +120,22 @@ context-twin status
 context-twin list
 context-twin capture-clipboard
 context-twin overlay-state
+context-twin verify-prompt 947306
+context-twin verify-prompt 947306 --full
 ```
+
+`verify-prompt` is the programmatic control plane for Codex/automation. The
+read-only form validates the explicit PROMPT_ID binding, real Chrome tab/content
+script and the context/thread twin. `--full` also opens/focuses the bound Codex
+thread, waits for the GNOME companion heartbeat, exercises shared-note
+propagation in both directions with automatic snapshot/restore, checks overlay
+invalidation/recovery, and verifies Chrome focus acknowledgement.
+
+If the Chrome context is missing, the verifier asks the extension to create a
+fresh canonical ChatGPT context rather than guessing among existing tabs. If the
+Codex thread is missing, it may pair the one unique recent native Codex session
+that explicitly contains the same six-digit PROMPT_ID; ambiguous matches fail
+closed.
 
 ## Data
 
