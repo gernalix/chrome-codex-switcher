@@ -383,6 +383,7 @@ def verify_prompt(
         wait_gnome_note(codex_marker)
         gates["note_codex_to_chrome"] = True
 
+        invalidated_at = time.time()
         hidden = call("/api/codex-activity", {"kind": "verify-stale-guard"})
         if not hidden.get("ok"):
             raise RuntimeError("stale_guard_invalidation_failed")
@@ -395,6 +396,10 @@ def verify_prompt(
                 state.get("visible")
                 and state.get("context_id") == context_id
                 and state.get("codex_thread") == thread
+                and float(state.get("seen_at") or 0) >= invalidated_at
+                and _read_overlay().get("visible")
+                and _read_overlay().get("context_id") == context_id
+                and _read_overlay().get("codex_thread") == thread
             ),
             "stale_guard_recovery",
         )
