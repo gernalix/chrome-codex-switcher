@@ -11,10 +11,17 @@ command -v gio >/dev/null || { echo "ERROR: gio is required" >&2; exit 1; }
 command -v systemctl >/dev/null || { echo "ERROR: systemctl is required" >&2; exit 1; }
 
 mkdir -p "$PREFIX" "$BIN_DIR" "$SYSTEMD_DIR"
-rm -rf "$PREFIX/host" "$PREFIX/extension" "$PREFIX/contrib"
+rm -rf "$PREFIX/host" "$PREFIX/contrib"
 cp -a "$ROOT/host" "$PREFIX/host"
-cp -a "$ROOT/extension" "$PREFIX/extension"
 cp -a "$ROOT/contrib" "$PREFIX/contrib"
+
+# Keep the deployed extension directory itself stable. Flatpak Chrome may keep
+# an unpacked-extension grant through the document portal (/run/flatpak/doc/*).
+# Replacing this directory invalidates that grant and makes Reload fail with
+# "File path cannot be resolved". Refresh only its contents instead.
+mkdir -p "$PREFIX/extension"
+find "$PREFIX/extension" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+cp -a "$ROOT/extension/." "$PREFIX/extension/"
 install -m 0644 "$ROOT/systemd/chrome-codex-switcher.service" "$SYSTEMD_DIR/chrome-codex-switcher.service"
 
 cat > "$BIN_DIR/context-twin" <<'WRAPPER'
