@@ -1,4 +1,5 @@
 const BASE = "http://127.0.0.1:43817";
+const WORKFLOWY_BRIDGE = "http://127.0.0.1:8765";
 const MAP_KEY = "tabContexts";
 let eventLoopRunning = false;
 let eventSeq = 0;
@@ -76,6 +77,42 @@ async function currentTab() {
   return tab;
 }
 
+async function promptText(promptId) {
+  const response = await fetch(`${WORKFLOWY_BRIDGE}/roadmap/prompt/${encodeURIComponent(promptId)}`, {cache: "no-store"});
+  if (!response.ok) throw new Error(`roadmap_prompt_http_${response.status}`);
+  const data = await response.json();
+  if (!data?.prompt_text) throw new Error(data?.error || "prompt_text_missing");
+  return data.prompt_text;
+}
+
+async function promptBinding(promptId) {
+  return await api(`/api/prompt?prompt_id=${encodeURIComponent(promptId)}`);
+}
+
+async function bindPrompt(promptId, tab, context) {
+  return await api("/api/prompt/bind", {
+    method: "POST",
+    body: {
+      prompt_id: promptId,
+      context_id: context.id,
+      url: canonicalUrl(tab.url || ""),
+      title: tab.title || ""
+    }
+  });
+}
+
+async function armPrompt(promptId, tab, context) {
+  return await api("/api/prompt/arm", {
+    method: "POST",
+    body: {
+      prompt_id: promptId,
+      context_id: context?.id || null,
+      url: canonicalUrl(tab?.url || ""),
+      title: tab?.title || ""
+    }
+  });
+}
+
 async function currentContext() {
   const tab = await currentTab();
   const context = await ensureContext(tab);
@@ -106,7 +143,7 @@ async function switchCurrent() {
   return result;
 }
 
-async function focusContext(payload) {
+async function focusContext(payload, preferredWindowId = null) {
   const map = await readTabMap();
   let target = null;
   for (const [tabId, value] of Object.entries(map)) {
@@ -125,12 +162,64 @@ async function focusContext(payload) {
     target = matches[0] || null;
   }
 
-  if (!target) target = await chrome.tabs.create({url: payload.url, active: false});
+  if (!target) {
+    target = await chrome.tabs.create({
+      url: payload.url,
+      active: false,
+      ...(preferredWindowId != null ? {windowId: preferredWindowId} : {})
+    });
+  } else if (preferredWindowId != null && target.windowId !== preferredWindowId) {
+    try {
+      target = await chrome.tabs.move(target.id, {windowId: preferredWindowId, index: -1});
+    } catch {}
+  }
 
   map[String(target.id)] = {contextId: payload.context_id, url: canonicalUrl(payload.url), lastSeen: Date.now()};
   await writeTabMap(map);
   await chrome.tabs.update(target.id, {active: true});
   if (target.windowId != null) await chrome.windows.update(target.windowId, {focused: true});
+}
+
+
+async function focusPrompt(promptId, sourceTab, {create = true, arm = false} = {}) {
+  const known = await promptBinding(promptId);
+  if (known?.ok && known.binding?.context_id && known.binding?.url) {
+    if (arm) {
+      await api("/api/prompt/arm", {
+        method: "POST",
+        body: {
+          prompt_id: promptId,
+          context_id: known.binding.context_id,
+          url: known.binding.url,
+          title: known.binding.title || ""
+        }
+      });
+    }
+    await focusContext({
+      context_id: known.binding.context_id,
+      url: known.binding.url,
+      title: known.binding.title || ""
+    }, sourceTab?.windowId ?? null);
+    return {ok: true, existing: true};
+  }
+  if (!create) return {ok: false, error: "chrome_not_linked"};
+  const tab = await chrome.tabs.create({
+    url: "https://chatgpt.com/",
+    active: true,
+    ...(sourceTab?.windowId != null ? {windowId: sourceTab.windowId} : {})
+  });
+  const context = await ensureContext(tab);
+  if (!context) return {ok: false, error: "context_creation_failed"};
+  await bindPrompt(promptId, tab, context);
+  if (arm) await armPrompt(promptId, tab, context);
+  return {ok: true, existing: false, context};
+}
+
+async function openPromptCodex(promptId) {
+  return await api("/api/prompt/open-codex", {
+    method: "POST",
+    body: {prompt_id: promptId}
+  });
 }
 
 async function processEvent(event) {
@@ -212,6 +301,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(result);
       } else if (message.type === "side:unlink") {
         sendResponse(await api("/api/unlink", {method: "POST", body: {context_id: message.contextId}}));
+      } else if (message.type === "prompt:text") {
+        sendResponse({ok: true, promptText: await promptText(message.promptId)});
+      } else if (message.type === "prompt:launch") {
+        sendResponse(await focusPrompt(message.promptId, sender.tab || await currentTab(), {create: true, arm: true}));
+      } else if (message.type === "prompt:focus") {
+        sendResponse(await focusPrompt(message.promptId, sender.tab || await currentTab(), {create: false, arm: false}));
+      } else if (message.type === "prompt:codex") {
+        sendResponse(await openPromptCodex(message.promptId));
       } else {
         sendResponse({ok: false, error: "unknown_message"});
       }
