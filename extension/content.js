@@ -43,7 +43,30 @@
   let uiTimer = null;
   let lastUrl = location.href;
 
-  const send = message => new Promise(resolve => chrome.runtime.sendMessage(message, resolve));
+  let extensionContextAlive = true;
+
+  const send = message => new Promise(resolve => {
+    if (!extensionContextAlive) {
+      resolve({ok: false, error: "extension_context_invalidated"});
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage(message, response => {
+        const lastError = chrome.runtime.lastError;
+        if (lastError) {
+          const error = String(lastError.message || "runtime_message_failed");
+          if (/extension context invalidated/i.test(error)) extensionContextAlive = false;
+          resolve({ok: false, error});
+          return;
+        }
+        resolve(response ?? {ok: false, error: "empty_response"});
+      });
+    } catch (error) {
+      const messageText = String(error?.message || error);
+      if (/extension context invalidated/i.test(messageText)) extensionContextAlive = false;
+      resolve({ok: false, error: messageText});
+    }
+  });
 
   function flash(text, ms = 2200) {
     flashEl.textContent = text;
@@ -202,12 +225,18 @@
     }, true);
   }
 
-  setInterval(() => {
+  const urlWatchTimer = setInterval(() => {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
-      refresh();
+      refresh().catch(() => {});
     }
   }, 750);
+
+  window.addEventListener("pagehide", () => {
+    clearInterval(urlWatchTimer);
+    clearTimeout(noteTimer);
+    clearTimeout(uiTimer);
+  }, {once: true});
 
   refresh().catch(() => {
     status.textContent = "daemon offline";
