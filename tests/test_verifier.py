@@ -3,10 +3,11 @@ import os
 import tempfile
 import time
 import unittest
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
-from chrome_codex_switcher.verifier import discover_codex_session, verify_prompt, verify_overlay
+from chrome_codex_switcher.verifier import discover_codex_session, verify_prompt, verify_overlay, verify_workflowy_projection
 
 
 class VerifierTests(unittest.TestCase):
@@ -24,23 +25,19 @@ class VerifierTests(unittest.TestCase):
             "visible": True, "context_id": "wrong", "codex_thread": "thread", "note": "hello"}):
             self.assertEqual("BLOCKED", verify_overlay(request=request)["result"])
 
-    def test_workflowy_gate_requires_real_action_ack(self):
-        now = time.time()
-        binding = {"context_id": "ctx", "codex_thread": "thread", "codex_deep_link": "codex://threads/thread"}
-        ack = {"ok": True, "context_id": "ctx", "rendered": {"context_id": "ctx"}}
-        def request(path, payload=None, timeout=4.0):
-            if path == "/api/health": return {"ok": True, "extension_runtime": {"version": "1", "seen_at": now}}
-            if path.startswith("/api/prompt?"): return {"ok": True, "binding": binding}
-            if path.startswith("/api/context?"): return {"ok": True, "context": {"twin": {"codex_thread": "thread", "codex_deep_link": "codex://threads/thread"}}}
-            if path == "/api/prompt/control":
-                return {"ok": True, "request_id": payload["action"]}
-            if path.endswith("ack?request_id=probe"): return {"ok": True, "ack": ack}
-            if path.endswith("ack?request_id=workflowy"):
-                return {"ok": True, "ack": {"ok": True, "prompt_id": "123456", "action_present": False}}
-            self.fail(path)
-        result = verify_prompt("123456", request=request, scope="workflowy")
-        self.assertEqual("BLOCKED", result["result"])
-        self.assertFalse(result["gates"]["workflowy"])
+    def test_workflowy_gate_reads_real_projection_cache(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"WORKFLOWY_CACHE_PATH": f"{tmp}/cache.sqlite3"}):
+            path = Path(os.environ["WORKFLOWY_CACHE_PATH"])
+            conn = sqlite3.connect(path)
+            conn.execute("CREATE TABLE nodes (name TEXT, note TEXT, modified_at INTEGER)")
+            conn.execute(
+                "INSERT INTO nodes VALUES (?,?,?)",
+                ("[123456] Prompt", "🔎 Verify: http://127.0.0.1:43817/ui/prompt/123456/verify", 1),
+            )
+            conn.commit()
+            conn.close()
+            self.assertTrue(verify_workflowy_projection("123456")["pass"])
+            self.assertFalse(verify_workflowy_projection("654321")["pass"])
 
     def test_discover_codex_session_requires_unique_exact_prompt(self):
         with tempfile.TemporaryDirectory() as tmp:

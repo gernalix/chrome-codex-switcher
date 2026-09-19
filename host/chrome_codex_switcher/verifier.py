@@ -4,6 +4,7 @@ import json
 import fcntl
 import os
 import re
+import sqlite3
 import time
 from pathlib import Path
 from typing import Callable, Any
@@ -48,6 +49,32 @@ def verify_overlay(*, request: Callable[..., dict]) -> dict[str, Any]:
     }
     return {"result": "PASS" if all(gates.values()) else "BLOCKED", "gates": gates,
             "blocker": None if all(gates.values()) else "overlay_runtime_mismatch"}
+
+
+def verify_workflowy_projection(prompt_id: str) -> dict[str, Any]:
+    """Read the real Workflowy cache, not a browser tab's rendered DOM."""
+    path = Path(os.environ.get(
+        "WORKFLOWY_CACHE_PATH", "~/.local/share/workflowy-bridge/cache.sqlite3"
+    )).expanduser()
+    expected_name = f"[{prompt_id}]"
+    expected_action = f"http://127.0.0.1:43817/ui/prompt/{prompt_id}/verify"
+    if not path.is_file():
+        return {"pass": False, "error": "workflowy_cache_missing"}
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT name,note,modified_at FROM nodes WHERE name LIKE ?",
+                (expected_name + "%",),
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return {"pass": False, "error": f"workflowy_cache_error:{type(exc).__name__}"}
+    matches = [row for row in rows if expected_action in str(row[1] or "")]
+    if len(matches) != 1:
+        return {"pass": False, "error": "workflowy_verify_action_missing_or_ambiguous"}
+    return {"pass": True, "node_name": matches[0][0], "modified_at": matches[0][2]}
 
 
 def discover_codex_session(
@@ -209,6 +236,13 @@ def _verify_prompt(
         result["blocker"] = "runtime_health_failed"
         return result
 
+    if scope == "workflowy":
+        workflowy = verify_workflowy_projection(prompt_id)
+        gates["workflowy"] = bool(workflowy.get("pass"))
+        result["result"] = "PASS" if gates["workflowy"] else "BLOCKED"
+        result["blocker"] = None if gates["workflowy"] else str(workflowy.get("error"))
+        return result
+
     binding_response = call(f"/api/prompt?prompt_id={prompt_id}")
     binding = binding_response.get("binding") if binding_response.get("ok") else None
 
@@ -287,6 +321,8 @@ def _verify_prompt(
         return result
 
     chrome_probe = control("probe")
+    if not chrome_probe.get("ok"):
+        chrome_probe = control("ensure")
     gates["chrome_probe"] = bool(
         chrome_probe.get("ok")
         and chrome_probe.get("context_id") == context_id
@@ -295,13 +331,6 @@ def _verify_prompt(
     )
     if not gates["chrome_probe"]:
         result["blocker"] = f"chrome_probe_failed:{chrome_probe.get('error')}"
-        return result
-
-    if scope == "workflowy":
-        workflowy = control("workflowy")
-        gates["workflowy"] = bool(workflowy.get("ok") and workflowy.get("prompt_id") == prompt_id and workflowy.get("action_present"))
-        result["result"] = "PASS" if gates["workflowy"] else "BLOCKED"
-        result["blocker"] = None if gates["workflowy"] else f"workflowy_action_missing:{workflowy.get('error')}"
         return result
 
     if scope == "binding" or (not full and scope == "prompt"):
@@ -422,16 +451,23 @@ def _verify_prompt(
         overlay = _read_overlay()
         if overlay.get("visible"):
             raise RuntimeError("stale_guard_did_not_hide")
-        recovered = wait_until(
+        wait_until(
             gnome_runtime,
+            lambda state: bool(
+                not state.get("visible")
+                and float(state.get("seen_at") or 0) >= invalidated_at
+            ),
+            "stale_guard_hidden",
+        )
+        reopened = call("/api/prompt/open-codex", {"prompt_id": prompt_id})
+        if not reopened.get("ok"):
+            raise RuntimeError(f"stale_guard_reopen_failed:{reopened.get('error')}")
+        recovered = wait_until(
+            _read_overlay,
             lambda state: bool(
                 state.get("visible")
                 and state.get("context_id") == context_id
                 and state.get("codex_thread") == thread
-                and float(state.get("seen_at") or 0) >= invalidated_at
-                and _read_overlay().get("visible")
-                and _read_overlay().get("context_id") == context_id
-                and _read_overlay().get("codex_thread") == thread
             ),
             "stale_guard_recovery",
         )
@@ -447,10 +483,10 @@ def _verify_prompt(
             raise RuntimeError(f"chrome_focus_failed:{chrome_focus.get('error')}")
 
         if scope == "prompt":
-            workflowy = control("workflowy")
-            gates["workflowy"] = bool(workflowy.get("ok") and workflowy.get("prompt_id") == prompt_id and workflowy.get("action_present"))
+            workflowy = verify_workflowy_projection(prompt_id)
+            gates["workflowy"] = bool(workflowy.get("pass"))
             if not gates["workflowy"]:
-                raise RuntimeError(f"workflowy_action_missing:{workflowy.get('error')}")
+                raise RuntimeError(str(workflowy.get("error")))
 
     except Exception as exc:
         failure = str(exc)

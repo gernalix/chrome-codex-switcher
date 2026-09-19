@@ -576,6 +576,9 @@ async function runEventLoop() {
     while (true) {
       try {
         const data = await api(`/api/events?after=${eventSeq}&timeout=20`, {timeoutMs: 24000});
+        // A daemon restart preserves this worker but loses its in-memory
+        // runtime observation. Renew the heartbeat once the bridge reconnects.
+        await heartbeat();
         for (const event of data.events || []) await processEvent(event);
         // The daemon sequence is process-local and can reset after service restart.
         eventSeq = Number(data.seq || 0);
@@ -596,7 +599,12 @@ chrome.runtime.onInstalled.addListener(async () => {
 runEventLoop();
 });
 chrome.runtime.onStartup.addListener(() => runEventLoop());
-chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === "bridge-keepalive") runEventLoop(); });
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name !== "bridge-keepalive") return;
+  // Alarms wake an MV3 worker even while a previous long-poll is reconnecting.
+  heartbeat();
+  runEventLoop();
+});
 
 chrome.tabs.onActivated.addListener(async ({tabId}) => {
   try {
