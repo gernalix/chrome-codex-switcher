@@ -53,12 +53,14 @@ async function writeTabMap(map) {
   await chrome.storage.local.set({[MAP_KEY]: map});
 }
 
-async function ensureContext(tab) {
-  if (!tab?.id || !tab.url || !/^https?:/.test(tab.url)) return null;
-  const url = canonicalUrl(tab.url);
+async function ensureContext(tab, fallbackUrl = "") {
+  const rawUrl = [tab?.url, tab?.pendingUrl, fallbackUrl].find(value => /^https?:/.test(value || ""));
+  if (!tab?.id || !rawUrl) return null;
+  const url = canonicalUrl(rawUrl);
   const map = await readTabMap();
   const direct = map[String(tab.id)];
-  let record = direct && direct.url === url ? direct : null;
+  const openedChat = direct?.url === "https://chatgpt.com/" && /^https:\/\/chatgpt\.com\/(?:c\/|g\/)/.test(url);
+  let record = direct && (direct.url === url || openedChat) ? direct : null;
 
   if (!record) {
     const openTabs = await chrome.tabs.query({});
@@ -101,7 +103,7 @@ async function bindPrompt(promptId, tab, context) {
     body: {
       prompt_id: promptId,
       context_id: context.id,
-      url: canonicalUrl(tab.url || ""),
+      url: context.url,
       title: tab.title || ""
     }
   });
@@ -113,7 +115,7 @@ async function armPrompt(promptId, tab, context) {
     body: {
       prompt_id: promptId,
       context_id: context?.id || null,
-      url: canonicalUrl(tab?.url || ""),
+      url: context?.url || canonicalUrl(tab?.url || tab?.pendingUrl || ""),
       title: tab?.title || ""
     }
   });
@@ -191,7 +193,7 @@ async function focusPrompt(promptId, sourceTab, {create = true, arm = false} = {
   const known = await promptBinding(promptId);
   if (known?.ok && known.binding?.context_id && known.binding?.url) {
     if (arm) {
-      await api("/api/prompt/arm", {
+      const armed = await api("/api/prompt/arm", {
         method: "POST",
         body: {
           prompt_id: promptId,
@@ -200,6 +202,9 @@ async function focusPrompt(promptId, sourceTab, {create = true, arm = false} = {
           title: known.binding.title || ""
         }
       });
+      if (!armed?.ok || armed.pending?.context_id !== known.binding.context_id) {
+        return {ok: false, error: "prompt_arm_failed"};
+      }
     }
     await focusContext({
       context_id: known.binding.context_id,
@@ -214,10 +219,14 @@ async function focusPrompt(promptId, sourceTab, {create = true, arm = false} = {
     active: true,
     ...(sourceTab?.windowId != null ? {windowId: sourceTab.windowId} : {})
   });
-  const context = await ensureContext(tab);
+  const context = await ensureContext(tab, "https://chatgpt.com/");
   if (!context) return {ok: false, error: "context_creation_failed"};
-  await bindPrompt(promptId, tab, context);
-  if (arm) await armPrompt(promptId, tab, context);
+  const bound = await bindPrompt(promptId, tab, context);
+  if (!bound?.ok || bound.binding?.context_id !== context.id) return {ok: false, error: "prompt_bind_failed"};
+  if (arm) {
+    const armed = await armPrompt(promptId, tab, context);
+    if (!armed?.ok || armed.pending?.context_id !== context.id) return {ok: false, error: "prompt_arm_failed"};
+  }
   return {ok: true, existing: false, context};
 }
 

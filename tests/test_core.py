@@ -89,6 +89,24 @@ class AppTests(unittest.TestCase):
         self.assertEqual("codex://threads/thread-prompt", binding["codex_deep_link"])
         self.assertEqual("ctx-1", self.store.twin_by_thread("thread-prompt")["context_id"])
 
+    def test_prompt_arm_requires_real_context(self):
+        with self.assertRaisesRegex(ValueError, "prompt_context_missing"):
+            self.app.arm_prompt({"prompt_id": "514458"})
+        self.assertIsNone(self.store.get_meta("pending_prompt"))
+
+    def test_prompt_pairing_is_atomic_and_context_bound(self):
+        self.app.upsert_context(self.context)
+        self.app.arm_prompt({**self.context, "prompt_id": "514458"})
+        self.app.handle_clipboard("codex://threads/thread-prompt")
+        binding = self.store.prompt_binding("514458")
+        self.assertEqual(binding["context_id"], self.store.twin_by_thread("thread-prompt")["context_id"])
+        self.assertEqual(binding["codex_deep_link"], "codex://threads/thread-prompt")
+        self.assertIsNone(self.store.get_meta("pending_prompt"))
+        self.app.upsert_context({"context_id": "other-context", "url": "https://example.com/"})
+        with self.assertRaisesRegex(ValueError, "prompt_context_mismatch"):
+            self.store.link_prompt("514458", "other-context", "other-thread", "codex://threads/other-thread")
+        self.assertEqual(self.store.prompt_binding("514458"), binding)
+
     def test_open_prompt_codex_uses_bound_deep_link(self):
         self.app.upsert_context(self.context)
         self.store.bind_prompt(

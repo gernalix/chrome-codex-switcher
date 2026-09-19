@@ -158,6 +158,8 @@ class App:
     def invalidate_codex_overlay(self, reason: str = "possible_thread_change") -> dict[str, Any]:
         self._active_codex_title = None
         self._write_overlay_hidden(reason)
+        if self._a11y_watch:
+            self._a11y_watch.refresh()
         return {"ok": True, "action": "overlay_hidden", "reason": reason}
 
     def health(self) -> dict[str, Any]:
@@ -227,6 +229,8 @@ class App:
                 if existing and existing.get("context_id")
                 else None
             )
+        if not context_id or not self.store.get_context(context_id):
+            raise ValueError("prompt_context_missing")
         pending = {
             "prompt_id": prompt_id,
             "context_id": context_id,
@@ -297,25 +301,24 @@ class App:
             self._last_clipboard_at = seen_at
         self.store.set_meta("active_codex_thread", thread)
 
+        paired_prompt = False
         pending_prompt = self.store.get_meta("pending_prompt")
         if pending_prompt:
             if float(pending_prompt.get("expires_at", 0)) >= now():
                 prompt_id = self._prompt_id(pending_prompt.get("prompt_id"))
                 context_id = str(pending_prompt.get("context_id") or "").strip() or None
-                if context_id and self.store.get_context(context_id):
-                    self.store.link(context_id, thread, deep_link)
-                binding = self.store.bind_prompt(
-                    prompt_id,
-                    context_id=context_id,
-                    codex_thread=thread,
-                    codex_deep_link=deep_link,
-                )
-                self.store.delete_meta("pending_prompt")
-                self.broker.emit("prompt_linked", binding)
+                if context_id:
+                    binding = self.store.link_prompt(prompt_id, context_id, thread, deep_link)
+                    self.store.delete_meta("pending_prompt")
+                    self.broker.emit("prompt_linked", binding)
+                    self.broker.emit("linked", {"context_id": context_id, "codex_thread": thread, "codex_deep_link": deep_link})
+                    paired_prompt = True
+                else:
+                    self.store.delete_meta("pending_prompt")
             else:
                 self.store.delete_meta("pending_prompt")
 
-        pending = self.store.get_meta("pending_link")
+        pending = None if paired_prompt else self.store.get_meta("pending_link")
         if pending:
             if float(pending.get("expires_at", 0)) >= now():
                 context_id = str(pending["context_id"])

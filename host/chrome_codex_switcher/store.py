@@ -213,6 +213,34 @@ class Store:
             )
         return self.get_context(context_id) or {}
 
+    def link_prompt(self, prompt_id: str, context_id: str, thread: str, deep_link: str) -> dict[str, Any]:
+        ts = now()
+        with self._connect() as db:
+            if not db.execute("SELECT 1 FROM contexts WHERE id=?", (context_id,)).fetchone():
+                raise ValueError("prompt_context_missing")
+            current = db.execute("SELECT context_id FROM prompt_bindings WHERE prompt_id=?", (prompt_id,)).fetchone()
+            if current and current["context_id"] not in (None, context_id):
+                raise ValueError("prompt_context_mismatch")
+            conflict = db.execute(
+                "SELECT 1 FROM prompt_bindings WHERE prompt_id<>? AND (context_id=? OR codex_thread=?)",
+                (prompt_id, context_id, thread),
+            ).fetchone()
+            if conflict:
+                raise ValueError("prompt_pairing_conflict")
+            db.execute("DELETE FROM twins WHERE context_id=? OR codex_thread=?", (context_id, thread))
+            db.execute(
+                "INSERT INTO twins(codex_thread,codex_deep_link,context_id,created_at,updated_at) VALUES(?,?,?,?,?)",
+                (thread, deep_link, context_id, ts, ts),
+            )
+            db.execute(
+                """INSERT INTO prompt_bindings(prompt_id,context_id,codex_thread,codex_deep_link,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?) ON CONFLICT(prompt_id) DO UPDATE SET
+                   context_id=excluded.context_id,codex_thread=excluded.codex_thread,
+                   codex_deep_link=excluded.codex_deep_link,updated_at=excluded.updated_at""",
+                (prompt_id, context_id, thread, deep_link, ts, ts),
+            )
+        return self.prompt_binding(prompt_id) or {}
+
     def unlink_context(self, context_id: str) -> None:
         with self._connect() as db:
             db.execute("DELETE FROM twins WHERE context_id=?", (context_id,))

@@ -211,7 +211,8 @@
           await copyPrompt(promptId);
         } else if (action === "launch") {
           await copyPrompt(promptId);
-          await send({type: "prompt:launch", promptId});
+          const result = await send({type: "prompt:launch", promptId});
+          if (!result?.ok) throw new Error(result?.error || "Prompt launch failed");
         } else if (action === "chrome") {
           const result = await send({type: "prompt:focus", promptId});
           if (!result?.ok) throw new Error(result?.error || "Chrome tab unavailable");

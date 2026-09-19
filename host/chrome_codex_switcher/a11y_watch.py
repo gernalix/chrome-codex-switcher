@@ -74,6 +74,7 @@ class CodexA11yWatch:
         self._max_nodes = max_nodes
         self._max_depth = max_depth
         self._stop = threading.Event()
+        self._refresh = threading.Event()
         self._thread: threading.Thread | None = None
         self._atspi: Any = None
         self.active = False
@@ -117,11 +118,17 @@ class CodexA11yWatch:
         self._thread = None
         self.active = False
 
+    def refresh(self) -> None:
+        self._refresh.set()
+
     def _run(self) -> None:
         pending: tuple[bool, str | None] | None = None
         samples = 0
         emitted: tuple[bool, str | None] | None = None
         while not self._stop.wait(self._interval):
+            if self._refresh.is_set():
+                self._refresh.clear()
+                emitted = None
             try:
                 state = self._probe()
                 self.error = None
