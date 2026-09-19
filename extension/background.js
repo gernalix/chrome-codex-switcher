@@ -192,7 +192,7 @@ async function focusContext(payload, preferredWindowId = null) {
 async function focusPrompt(promptId, sourceTab, {create = true, arm = false} = {}) {
   const known = await promptBinding(promptId);
   if (known?.ok && known.binding?.context_id && known.binding?.url) {
-    if (arm) {
+    if (arm && !known.binding?.codex_deep_link) {
       const armed = await api("/api/prompt/arm", {
         method: "POST",
         body: {
@@ -235,6 +235,17 @@ async function openPromptCodex(promptId) {
     method: "POST",
     body: {prompt_id: promptId}
   });
+}
+
+async function launchPrompt(promptId, sourceTab) {
+  const chromeSide = await focusPrompt(promptId, sourceTab, {create: true, arm: true});
+  if (!chromeSide?.ok) return chromeSide;
+  const codexSide = await api("/api/prompt/launch-codex", {
+    method: "POST",
+    body: {prompt_id: promptId}
+  });
+  if (!codexSide?.ok) return {ok: false, error: codexSide?.error || "codex_launch_failed", chrome: chromeSide, codex: codexSide};
+  return {ok: true, chrome: chromeSide, codex: codexSide};
 }
 
 async function processEvent(event) {
@@ -332,7 +343,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === "prompt:text") {
         sendResponse({ok: true, promptText: await promptText(message.promptId)});
       } else if (message.type === "prompt:launch") {
-        sendResponse(await focusPrompt(message.promptId, sender.tab || await currentTab(), {create: true, arm: true}));
+        sendResponse(await launchPrompt(message.promptId, sender.tab || await currentTab()));
       } else if (message.type === "prompt:focus") {
         sendResponse(await focusPrompt(message.promptId, sender.tab || await currentTab(), {create: false, arm: false}));
       } else if (message.type === "prompt:codex") {
