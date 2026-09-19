@@ -1,5 +1,4 @@
 const BASE = "http://127.0.0.1:43817";
-const WORKFLOWY_BRIDGE = "http://127.0.0.1:8765";
 const MAP_KEY = "tabContexts";
 let eventLoopRunning = false;
 let eventSeq = 0;
@@ -78,10 +77,8 @@ async function currentTab() {
 }
 
 async function promptText(promptId) {
-  const response = await fetch(`${WORKFLOWY_BRIDGE}/roadmap/prompt/${encodeURIComponent(promptId)}`, {cache: "no-store"});
-  if (!response.ok) throw new Error(`roadmap_prompt_http_${response.status}`);
-  const data = await response.json();
-  if (!data?.prompt_text) throw new Error(data?.error || "prompt_text_missing");
+  const data = await api(`/api/prompt/text?prompt_id=${encodeURIComponent(promptId)}`);
+  if (!data?.ok || !data?.prompt_text) throw new Error(data?.error || "prompt_text_missing");
   return data.prompt_text;
 }
 
