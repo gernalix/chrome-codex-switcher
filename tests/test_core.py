@@ -119,6 +119,43 @@ class AppTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.open_codex.assert_called_once_with("codex://threads/thread-prompt")
 
+    def test_launch_prompt_codex_opens_new_thread_after_real_arm(self):
+        self.app.upsert_context(self.context)
+        self.app.bind_prompt({**self.context, "prompt_id": "514458"})
+        self.app.arm_prompt({**self.context, "prompt_id": "514458"})
+
+        result = self.app.launch_prompt_codex({"prompt_id": "514458"})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["mode"], "new")
+        self.assertEqual(result["context_id"], "ctx-1")
+        self.open_codex.assert_called_once_with("codex://threads/new")
+
+    def test_launch_prompt_codex_reuses_existing_thread(self):
+        self.app.upsert_context(self.context)
+        self.store.bind_prompt(
+            "514458",
+            context_id="ctx-1",
+            codex_thread="thread-prompt",
+            codex_deep_link="codex://threads/thread-prompt",
+        )
+
+        result = self.app.launch_prompt_codex({"prompt_id": "514458"})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["mode"], "existing")
+        self.open_codex.assert_called_once_with("codex://threads/thread-prompt")
+
+    def test_launch_prompt_codex_refuses_unarmed_new_thread(self):
+        self.app.upsert_context(self.context)
+        self.app.bind_prompt({**self.context, "prompt_id": "514458"})
+
+        result = self.app.launch_prompt_codex({"prompt_id": "514458"})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "prompt_not_armed")
+        self.open_codex.assert_not_called()
+
     def test_invalid_prompt_id_is_rejected(self):
         with self.assertRaises(ValueError):
             self.app.bind_prompt({**self.context, "prompt_id": "abc"})

@@ -332,6 +332,36 @@ class App:
         self._open_codex(str(binding["codex_deep_link"]))
         return {"ok": True, "binding": binding}
 
+    def launch_prompt_codex(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Open the prompt's Codex target after Chrome has been prepared."""
+        prompt_id = self._prompt_id(payload.get("prompt_id"))
+        binding = self.store.prompt_binding(prompt_id)
+
+        if binding and binding.get("codex_deep_link") and binding.get("codex_thread"):
+            result = self.open_prompt_codex({"prompt_id": prompt_id})
+            return {**result, "mode": "existing"}
+
+        pending = self.store.get_meta("pending_prompt")
+        if not isinstance(pending, dict) or str(pending.get("prompt_id") or "") != prompt_id:
+            return {"ok": False, "error": "prompt_not_armed"}
+        if float(pending.get("expires_at", 0)) < now():
+            self.store.delete_meta("pending_prompt")
+            return {"ok": False, "error": "prompt_arm_expired"}
+
+        context_id = str(pending.get("context_id") or "").strip()
+        if not context_id or not self.store.get_context(context_id):
+            return {"ok": False, "error": "prompt_context_missing"}
+
+        deep_link = "codex://threads/new"
+        self._open_codex(deep_link)
+        return {
+            "ok": True,
+            "mode": "new",
+            "prompt_id": prompt_id,
+            "context_id": context_id,
+            "deep_link": deep_link,
+        }
+
     def upsert_context(self, payload: dict[str, Any]) -> dict[str, Any]:
         context_id = str(payload["context_id"])
         url = canonical_url(str(payload.get("url", "")))
@@ -726,6 +756,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, APP.arm_prompt(payload))
             elif parsed.path == "/api/prompt/open-codex":
                 self._json(HTTPStatus.OK, APP.open_prompt_codex(payload))
+            elif parsed.path == "/api/prompt/launch-codex":
+                self._json(HTTPStatus.OK, APP.launch_prompt_codex(payload))
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
         except (ValueError, KeyError, json.JSONDecodeError) as exc:
