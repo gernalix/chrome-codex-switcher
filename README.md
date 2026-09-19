@@ -122,6 +122,11 @@ context-twin capture-clipboard
 context-twin overlay-state
 context-twin verify-prompt 947306
 context-twin verify-prompt 947306 --full
+context-twin verify-binding 947306
+context-twin verify-note 947306
+context-twin verify-overlay
+context-twin verify-workflowy 947306
+context-twin self-test
 ```
 
 `verify-prompt` is the programmatic control plane for Codex/automation. The
@@ -136,6 +141,16 @@ fresh canonical ChatGPT context rather than guessing among existing tabs. If the
 Codex thread is missing, it may pair the one unique recent native Codex session
 that explicitly contains the same six-digit PROMPT_ID; ambiguous matches fail
 closed.
+
+`GET /api/verify/prompt/947306` runs the full verifier and returns JSON
+`result: PASS|BLOCKED`, granular `gates`, and a concrete `blocker` on failure.
+The focused CLI commands reuse the same gates (`verify-note` exercises the
+bidirectional note snapshot/restore; `verify-overlay` reads the currently
+focused GNOME overlay). Workflowy projects a `🔎 Verify` action for each
+prompt; clicking it displays `✅ Runtime verified` or `❌ Runtime failed` with
+the blocker. A full PASS additionally requires that action to be rendered in
+an open Workflowy tab. No browser screenshots or title-based thread guessing
+are involved.
 
 ## Data
 

@@ -29,8 +29,11 @@ def _read_overlay() -> dict[str, Any]:
 
 def verify_overlay(*, request: Callable[..., dict]) -> dict[str, Any]:
     """Read back the live GNOME overlay against the daemon's actual cache."""
-    health = request("/api/health", timeout=4.0)
-    state = request("/api/gnome-runtime", timeout=4.0).get("gnome_runtime") or {}
+    try:
+        health = request("/api/health", timeout=4.0)
+        state = request("/api/gnome-runtime", timeout=4.0).get("gnome_runtime") or {}
+    except Exception as exc:
+        return {"result": "BLOCKED", "gates": {}, "blocker": f"runtime_unavailable:{type(exc).__name__}"}
     overlay = _read_overlay()
     gates = {
         "daemon": bool(health.get("ok")),
@@ -101,6 +104,21 @@ def discover_codex_session(
 
 
 def verify_prompt(
+    prompt_id: str, *, request: Callable[..., dict], full: bool = False,
+    timeout: float = 12.0, session_root: Path | None = None,
+    scope: str = "prompt",
+) -> dict[str, Any]:
+    try:
+        return _verify_prompt(prompt_id, request=request, full=full,
+                              timeout=timeout, session_root=session_root, scope=scope)
+    except ValueError:
+        raise
+    except Exception as exc:
+        return {"prompt_id": prompt_id, "scope": scope, "result": "BLOCKED",
+                "gates": {}, "blocker": f"control_plane_error:{type(exc).__name__}:{exc}"}
+
+
+def _verify_prompt(
     prompt_id: str,
     *,
     request: Callable[..., dict],
