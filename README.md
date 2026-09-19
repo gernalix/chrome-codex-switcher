@@ -7,30 +7,31 @@ Fedora/Wayland workflow helper for pairing a specific Chrome tab with a specific
 - Adds a movable/resizable floating note to normal Chrome pages.
 - Pairs one Chrome tab-context with one `codex://threads/...` Codex thread.
 - Chrome → Codex: one extension shortcut opens the exact paired Codex thread with `gio open`.
-- Codex → Chrome: press Codex Desktop's **Copy chat deep link** shortcut; the daemon detects the `codex://threads/...` clipboard value and focuses the exact paired Chrome tab.
+- Codex → Chrome: press Codex Desktop's **Copy chat deep link** shortcut; on GNOME Wayland the GNOME companion observes the clipboard change inside the compositor and forwards the `codex://threads/...` value to the daemon, which focuses the exact paired Chrome tab.
 - Persists notes and pairings in SQLite.
 - Restores/focuses the right Chrome tab even with many windows/tabs; if the paired tab is closed, it reopens its URL.
 - Provides a searchable Chrome side panel for all contexts.
-- Ships an optional GNOME Shell overlay prototype for showing the current note over Codex Desktop.
+- Ships a GNOME Shell companion that provides both the Codex floating-note overlay and a native GNOME Wayland clipboard bridge.
 
 The core intentionally avoids Wayland window automation. Chrome controls its own tabs; Codex is addressed through its registered `codex://` deep links.
 
 ## Architecture
 
 ```text
-Codex Desktop --Copy deep link--> Wayland clipboard --wl-paste-->
-                                                        Fedora daemon
-Chrome extension <------- HTTP/event polling 127.0.0.1 -------^ |
-       |                                                     | |
-       +-- focus exact tab                                   | +-- gio open codex://threads/...
-       +-- floating note / side panel                        +---- SQLite state
+Codex Desktop --Copy deep link--> Wayland clipboard
+                                  |-- GNOME Shell owner-changed --> GNOME companion --+
+                                  |-- wl-paste --watch (other compositors) ------------+--> Fedora daemon
+Chrome extension <---------------- HTTP/event polling 127.0.0.1 ----------------------^ |
+       |                                                                                |
+       +-- focus exact tab                                                              +-- gio open codex://threads/...
+       +-- floating note / side panel                                                   +-- SQLite state
 ```
 
 The loopback HTTP bridge is deliberate: Chrome Flatpak can make local network requests, while classic Native Messaging is fragile in sandboxed Chrome installs.
 
 ## Install on Fedora
 
-Requirements:
+On GNOME Wayland no compositor change and no data-control protocol are required. The installer deploys the GNOME companion automatically when GNOME is detected. On other Wayland compositors, `wl-clipboard` remains the fallback:
 
 ```bash
 sudo dnf install wl-clipboard
@@ -65,7 +66,14 @@ Expected core checks:
 
 - daemon reachable;
 - `codex://` handler registered;
-- `wl-paste` available.
+- an active clipboard backend: `gnome-shell` on GNOME Wayland, otherwise a working `wl-paste --watch`.
+
+If the GNOME companion was installed for the first time but is not active yet, log out/in once and run:
+
+```bash
+gnome-extensions enable chrome-codex-switcher@gernalix.github.com
+context-twin status
+```
 
 ## Workflow
 
@@ -82,7 +90,9 @@ While Chrome Y is active, press **Alt+Shift+T** or click **↔ Codex**.
 
 ### Codex → Chrome
 
-While Codex X is active, press Codex's **Copy chat deep link** shortcut. When auto-switch is enabled (default), the clipboard watcher resolves X and asks the extension to focus Chrome Y.
+While Codex X is active, press Codex's **Copy chat deep link** shortcut. When auto-switch is enabled (default), the active clipboard backend resolves X and asks the extension to focus Chrome Y.
+
+On GNOME Wayland this does **not** depend on `wl-paste --watch`: the GNOME Shell companion listens to the compositor's clipboard ownership change signal and reads the clipboard through GNOME Shell itself.
 
 Copying a Codex deep link intentionally acts as “switch to twin” outside pairing mode. This can be disabled from the API/CLI later if desired.
 
@@ -124,11 +134,14 @@ Overlay cache:
 
 The HTTP server binds only to `127.0.0.1:43817`. Mutating browser requests are accepted only from the fixed extension origin or from local non-browser helper processes.
 
-## Optional Codex floating overlay
+## GNOME companion
 
-`contrib/gnome-extension@gernalix.github.com/` contains a GNOME Shell 49/50 prototype that reads the daemon's overlay cache and displays the paired note when a Codex/ChatGPT desktop window is focused.
+`contrib/gnome-extension@gernalix.github.com/` supports GNOME Shell 49/50. It has two jobs:
 
-It is not required for switching. It is intentionally isolated from the core so a GNOME update cannot break pairing or navigation.
+- read the daemon's overlay cache and display the paired note when a Codex/ChatGPT desktop window is focused;
+- bridge copied Codex deep links to the daemon using GNOME Shell's native clipboard APIs.
+
+The clipboard access is deliberate and limited to values matching `codex://threads/...`; unrelated clipboard text is ignored. On GNOME Wayland this companion is the preferred Codex → Chrome backend because GNOME does not expose the wlroots data-control protocol required by `wl-paste --watch`.
 
 ## Tests
 
