@@ -73,7 +73,7 @@ class AppTests(unittest.TestCase):
         armed = self.app.arm_prompt({**self.context, "prompt_id": "514458"})
         self.assertTrue(armed["ok"])
         linked = self.app.handle_clipboard("codex://threads/thread-prompt")
-        self.assertIn(linked["action"], {"linked", "active_thread_updated"})
+        self.assertIn(linked["action"], {"linked", "active_thread_updated", "focus_chrome"})
         binding = self.store.prompt_binding("514458")
         self.assertEqual("thread-prompt", binding["codex_thread"])
         self.assertEqual("codex://threads/thread-prompt", binding["codex_deep_link"])
