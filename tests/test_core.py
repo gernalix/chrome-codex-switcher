@@ -247,6 +247,36 @@ class AppTests(unittest.TestCase):
         self.assertEqual("thread-prompt", self.app._expected_codex_thread)
         self.open_codex.assert_called_once_with("codex://threads/thread-prompt")
 
+    def test_verify_prompt_snapshot_reports_consistent_binding(self):
+        self.app.upsert_context(self.context)
+        self.store.link_prompt(
+            "514458",
+            "ctx-1",
+            "thread-prompt",
+            "codex://threads/thread-prompt",
+        )
+        self.store.set_meta("extension_runtime", {"version": "0.4.0", "seen_at": __import__("time").time()})
+        self.store.set_meta("gnome_runtime", {
+            "seen_at": __import__("time").time(),
+            "focused_codex": False,
+            "visible": False,
+            "context_id": None,
+            "codex_thread": None,
+            "note": "",
+            "notes_independent": False,
+        })
+
+        class Watch:
+            active = True
+            error = None
+
+        self.app._a11y_watch = Watch()
+        result = self.app.verify_prompt_snapshot("514458")
+        self.assertEqual("PASS", result["result"])
+        self.assertTrue(result["checks"]["twin_consistent"])
+        self.assertTrue(result["checks"]["extension_heartbeat"])
+        self.assertTrue(result["checks"]["gnome_heartbeat"])
+
     def test_store_migrates_existing_note_column_without_data_loss(self):
         legacy_path = Path(self.tmp.name) / "legacy.sqlite3"
         with sqlite3.connect(legacy_path) as db:
