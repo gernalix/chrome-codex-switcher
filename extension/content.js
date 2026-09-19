@@ -203,9 +203,10 @@
     if (message.type === "linkArmed") flash("Go to the target Codex chat and press Copy chat deep link", 3500);
     if (message.type === "promptLateBindStatus") {
       if (message.stage === "codex") {
-        flash("✅ Chrome collegato. Ora apri la chat Codex corretta e premi Ctrl+Alt+L.", 8000);
+        flash("✅ Chrome collegato. Apri la chat Codex corretta e premi Ctrl+Alt+L.", 8500);
       } else if (message.stage === "complete") {
-        flash("✅ Chrome e Codex collegati al prompt.", 6000);
+        const automatic = message.source === "native_session" ? " Codex rilevato automaticamente." : "";
+        flash(`✅ Chrome e Codex collegati.${automatic}`, 6500);
       } else if (message.stage === "error") {
         flash(`Collegamento fallito: ${message.error || "errore sconosciuto"}`, 6000);
       }
@@ -231,7 +232,7 @@
       let url;
       try { url = new URL(anchor.href); } catch { return; }
       if (url.origin !== "http://127.0.0.1:43817") return;
-      const match = url.pathname.match(/^\/ui\/prompt\/(\d{6})\/(copy|launch|bind|chrome|codex|verify)$/);
+      const match = url.pathname.match(/^\/ui\/prompt\/(\d{6})\/(copy|launch|bind|bind-chrome|bind-codex|chrome|codex|verify)$/);
       if (!match) return;
       event.preventDefault();
       event.stopPropagation();
@@ -243,15 +244,27 @@
           await copyPrompt(promptId);
           const result = await send({type: "prompt:launch", promptId});
           if (!result?.ok) throw new Error(result?.error || "Prompt launch failed");
-        } else if (action === "bind") {
-          const result = await send({type: "prompt:bind-late", promptId});
+        } else if (action === "bind" || action === "bind-chrome" || action === "bind-codex") {
+          const type = action === "bind-chrome"
+            ? "prompt:bind-chrome"
+            : action === "bind-codex"
+              ? "prompt:bind-codex"
+              : "prompt:bind-late";
+          const result = await send({type, promptId});
           if (!result?.ok) throw new Error(result?.error || "Prompt binding failed");
           if (result.stage === "complete") {
-            flash("✅ Chrome e Codex sono già collegati.", 5000);
+            const automatic = result.source === "native_session" ? " Codex rilevato automaticamente." : "";
+            flash(`✅ Chrome e Codex collegati.${automatic}`, 6500);
           } else if (result.stage === "codex") {
-            flash("🌐 Chrome già collegato. Apri la chat Codex corretta e premi Ctrl+Alt+L.", 8000);
-          } else {
-            flash("🔗 Apri ora la tab ChatGPT di questo prompt: verrà agganciata automaticamente.", 8000);
+            flash("🧠 Apri la chat Codex corretta e premi Ctrl+Alt+L. È l'unica azione rimasta.", 9000);
+          } else if (result.stage === "chrome") {
+            if (result.source === "native_session") {
+              flash("🧠 Codex trovato automaticamente. Ora apri la tab ChatGPT corretta.", 8500);
+            } else if (Number(result.candidate_count || 0) > 1) {
+              flash("🌐 Più tab ChatGPT possibili: apri quella corretta e verrà associata automaticamente.", 9000);
+            } else {
+              flash("🌐 Apri la tab ChatGPT corretta: verrà associata automaticamente.", 8500);
+            }
           }
         } else if (action === "chrome") {
           const result = await send({type: "prompt:focus", promptId});

@@ -149,7 +149,119 @@ async function readPendingPromptCapture() {
   return pending;
 }
 
-async function beginPromptLateBind(promptId) {
+async function listPromptBindings() {
+  const result = await api("/api/prompts");
+  return Array.isArray(result?.bindings) ? result.bindings : [];
+}
+
+async function promptChromeCandidates(promptId, {excludeContextId = null} = {}) {
+  const [tabs, map, bindings] = await Promise.all([
+    chrome.tabs.query({}),
+    readTabMap(),
+    listPromptBindings()
+  ]);
+  const owners = new Map(
+    bindings
+      .filter(item => item?.context_id)
+      .map(item => [String(item.context_id), String(item.prompt_id || "")])
+  );
+  return tabs
+    .filter(isPromptChatTab)
+    .filter(tab => {
+      const contextId = map[String(tab.id)]?.contextId || null;
+      if (excludeContextId && contextId === excludeContextId) return false;
+      const owner = contextId ? owners.get(String(contextId)) : null;
+      return !owner || owner === String(promptId);
+    })
+    .sort((a, b) => Number(b.lastAccessed || 0) - Number(a.lastAccessed || 0));
+}
+
+async function recoverPromptCodex(promptId, {force = false} = {}) {
+  return await api("/api/prompt/recover-codex", {
+    method: "POST",
+    body: {prompt_id: promptId, force}
+  });
+}
+
+async function beginPromptCodexBind(promptId, {force = false} = {}) {
+  await clearPendingPromptCapture();
+  const result = await recoverPromptCodex(promptId, {force});
+  if (!result?.ok) return result || {ok: false, error: "prompt_codex_recovery_failed"};
+  return result;
+}
+
+async function finishPromptChromeBind(promptId, tab) {
+  const context = await ensureContext(tab);
+  if (!context) throw new Error("context_creation_failed");
+
+  const bindings = await listPromptBindings();
+  const owner = bindings.find(item => item?.context_id === context.id);
+  if (owner && String(owner.prompt_id || "") !== String(promptId)) {
+    throw new Error("prompt_context_conflict");
+  }
+
+  const bound = await bindPrompt(promptId, tab, context);
+  if (!bound?.ok || bound.binding?.context_id !== context.id) {
+    throw new Error(bound?.error || "prompt_bind_failed");
+  }
+
+  if (bound.binding?.codex_thread && bound.binding?.codex_deep_link) {
+    return {ok: true, stage: "complete", binding: bound.binding, context_id: context.id};
+  }
+
+  const codex = await beginPromptCodexBind(promptId);
+  if (!codex?.ok) throw new Error(codex?.error || "prompt_codex_recovery_failed");
+  return {
+    ok: true,
+    stage: codex.stage === "chrome" ? "complete" : codex.stage,
+    source: codex.source,
+    binding: codex.binding || bound.binding,
+    context_id: context.id
+  };
+}
+
+async function beginPromptChromeBind(promptId, sourceTab, {force = false} = {}) {
+  const known = await promptBinding(promptId);
+  const binding = known?.binding || {};
+  const hasChrome = !!(binding.context_id && binding.url);
+
+  if (hasChrome && !force) {
+    if (binding.codex_thread && binding.codex_deep_link) {
+      return {ok: true, stage: "complete", binding};
+    }
+    return await beginPromptCodexBind(promptId);
+  }
+
+  if (isPromptChatTab(sourceTab)) {
+    return await finishPromptChromeBind(promptId, sourceTab);
+  }
+
+  const candidates = await promptChromeCandidates(promptId, {
+    excludeContextId: force ? binding.context_id || null : null
+  });
+  if (candidates.length === 1) {
+    return await finishPromptChromeBind(promptId, candidates[0]);
+  }
+
+  const pending = {
+    promptId,
+    force,
+    armedAt: Date.now(),
+    expiresAt: Date.now() + PROMPT_CAPTURE_TTL_MS,
+    candidateCount: candidates.length
+  };
+  await chrome.storage.local.set({[PENDING_PROMPT_CAPTURE_KEY]: pending});
+  return {
+    ok: true,
+    stage: "chrome",
+    mode: candidates.length ? "choose_tab" : "wait_for_tab",
+    candidate_count: candidates.length,
+    pending,
+    binding
+  };
+}
+
+async function beginPromptLateBind(promptId, sourceTab = null) {
   const known = await promptBinding(promptId);
   const binding = known?.binding || {};
   const hasChrome = !!(binding.context_id && binding.url);
@@ -159,31 +271,10 @@ async function beginPromptLateBind(promptId) {
     await clearPendingPromptCapture();
     return {ok: true, stage: "complete", binding};
   }
-
-  if (hasChrome) {
-    await clearPendingPromptCapture();
-    const armed = await api("/api/prompt/arm", {
-      method: "POST",
-      body: {
-        prompt_id: promptId,
-        context_id: binding.context_id,
-        url: binding.url,
-        title: binding.title || ""
-      }
-    });
-    if (!armed?.ok || armed.pending?.context_id !== binding.context_id) {
-      return {ok: false, error: "prompt_arm_failed"};
-    }
-    return {ok: true, stage: "codex", binding};
+  if (!hasChrome) {
+    return await beginPromptChromeBind(promptId, sourceTab, {force: false});
   }
-
-  const pending = {
-    promptId,
-    armedAt: Date.now(),
-    expiresAt: Date.now() + PROMPT_CAPTURE_TTL_MS
-  };
-  await chrome.storage.local.set({[PENDING_PROMPT_CAPTURE_KEY]: pending});
-  return {ok: true, stage: "chrome", pending, hasCodex};
+  return await beginPromptCodexBind(promptId, {force: false});
 }
 
 async function maybeCapturePromptChromeTab(tab) {
@@ -194,28 +285,17 @@ async function maybeCapturePromptChromeTab(tab) {
   promptCaptureBusy = true;
   try {
     const promptId = String(pending.promptId || "");
-    const context = await ensureContext(tab);
-    if (!context) throw new Error("context_creation_failed");
-
-    const bound = await bindPrompt(promptId, tab, context);
-    if (!bound?.ok || bound.binding?.context_id !== context.id) {
-      throw new Error(bound?.error || "prompt_bind_failed");
-    }
-
-    let stage = "complete";
-    if (!(bound.binding?.codex_thread && bound.binding?.codex_deep_link)) {
-      const armed = await armPrompt(promptId, tab, context);
-      if (!armed?.ok || armed.pending?.context_id !== context.id) {
-        throw new Error(armed?.error || "prompt_arm_failed");
-      }
-      stage = "codex";
-    }
-
+    const result = await finishPromptChromeBind(promptId, tab);
     await clearPendingPromptCapture();
     try {
-      await chrome.tabs.sendMessage(tab.id, {type: "promptLateBindStatus", promptId, stage});
+      await chrome.tabs.sendMessage(tab.id, {
+        type: "promptLateBindStatus",
+        promptId,
+        stage: result.stage,
+        source: result.source || null
+      });
     } catch {}
-    return {ok: true, promptId, stage, context_id: context.id};
+    return {ok: true, promptId, ...result};
   } catch (error) {
     await clearPendingPromptCapture();
     try {
@@ -581,7 +661,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === "prompt:launch") {
         sendResponse(await launchPrompt(message.promptId, sender.tab || await currentTab()));
       } else if (message.type === "prompt:bind-late") {
-        sendResponse(await beginPromptLateBind(message.promptId));
+        sendResponse(await beginPromptLateBind(message.promptId, sender.tab || await currentTab()));
+      } else if (message.type === "prompt:bind-chrome") {
+        sendResponse(await beginPromptChromeBind(
+          message.promptId,
+          sender.tab || await currentTab(),
+          {force: true}
+        ));
+      } else if (message.type === "prompt:bind-codex") {
+        sendResponse(await beginPromptCodexBind(message.promptId, {force: true}));
       } else if (message.type === "prompt:focus") {
         sendResponse(await focusPrompt(message.promptId, sender.tab || await currentTab(), {create: false, arm: false}));
       } else if (message.type === "prompt:codex") {

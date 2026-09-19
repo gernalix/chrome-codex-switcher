@@ -21,6 +21,7 @@ from .a11y_watch import CodexA11yWatch
 from .broker import EventBroker
 from .store import Store
 from .util import cache_dir, canonical_url, db_path, now, overlay_path, parse_codex_link, write_json_atomic
+from .verifier import discover_codex_session
 from .xfixes_watch import XFixesWatch
 
 HOST = os.environ.get("CCS_HOST", "127.0.0.1")
@@ -31,6 +32,7 @@ PENDING_TTL = 120.0
 CLIPBOARD_DUPLICATE_WINDOW = 1.0
 PROMPT_ID_RE = re.compile(r"\d{6}\Z")
 PROMPT_PENDING_TTL = 10 * 60.0
+PROMPT_CODEX_DISCOVERY_AGE = 30 * 24 * 60 * 60.0
 
 
 class App:
@@ -276,6 +278,9 @@ class App:
         context_id = str(payload.get("context_id") or "").strip() or None
         current = self.store.prompt_binding(prompt_id)
         if context_id:
+            owner = self.store.prompt_by_context(context_id)
+            if owner and str(owner.get("prompt_id") or "") != prompt_id:
+                raise ValueError("prompt_context_conflict")
             url = canonical_url(str(payload.get("url") or ""))
             title = str(payload.get("title") or "")
             if url:
@@ -314,9 +319,83 @@ class App:
             "armed_at": now(),
             "expires_at": now() + PROMPT_PENDING_TTL,
         }
+        self.store.delete_meta("pending_prompt_codex")
         self.store.set_meta("pending_prompt", pending)
         self.broker.emit("prompt_armed", pending)
         return {"ok": True, "pending": pending}
+
+    def _codex_thread_conflict(self, prompt_id: str, thread: str) -> bool:
+        return any(
+            str(item.get("prompt_id") or "") != prompt_id
+            and str(item.get("codex_thread") or "") == thread
+            for item in self.store.list_prompt_bindings()
+        )
+
+    def recover_prompt_codex(
+        self,
+        payload: dict[str, Any],
+        *,
+        session_root: Path | None = None,
+    ) -> dict[str, Any]:
+        """Attach the Codex side later, preferring exact PROMPT_ID session discovery."""
+        prompt_id = self._prompt_id(payload.get("prompt_id"))
+        force = self._truthy(payload.get("force"))
+        current = self.store.prompt_binding(prompt_id)
+        if (
+            current
+            and current.get("codex_thread")
+            and current.get("codex_deep_link")
+            and not force
+        ):
+            return {"ok": True, "stage": "complete", "source": "existing", "binding": current}
+
+        discovered = discover_codex_session(
+            prompt_id,
+            session_root=session_root,
+            max_age_seconds=PROMPT_CODEX_DISCOVERY_AGE,
+        )
+        if discovered:
+            thread = str(discovered["session_id"])
+            deep_link = str(discovered["deep_link"])
+            if self._codex_thread_conflict(prompt_id, thread):
+                return {"ok": False, "error": "prompt_codex_conflict"}
+            context_id = str((current or {}).get("context_id") or "").strip() or None
+            if context_id:
+                binding = self.store.link_prompt(prompt_id, context_id, thread, deep_link)
+                stage = "complete"
+            else:
+                binding = self.store.bind_prompt(
+                    prompt_id,
+                    codex_thread=thread,
+                    codex_deep_link=deep_link,
+                )
+                stage = "chrome"
+            self.store.delete_meta("pending_prompt")
+            self.store.delete_meta("pending_prompt_codex")
+            self.broker.emit("prompt_linked", binding)
+            return {
+                "ok": True,
+                "stage": stage,
+                "source": "native_session",
+                "binding": binding,
+            }
+
+        pending = {
+            "prompt_id": prompt_id,
+            "armed_at": now(),
+            "expires_at": now() + PROMPT_PENDING_TTL,
+            "force": force,
+        }
+        self.store.delete_meta("pending_prompt")
+        self.store.set_meta("pending_prompt_codex", pending)
+        self.broker.emit("prompt_codex_armed", pending)
+        return {
+            "ok": True,
+            "stage": "codex",
+            "source": "clipboard",
+            "pending": pending,
+            "binding": current,
+        }
 
     def open_prompt_codex(self, payload: dict[str, Any]) -> dict[str, Any]:
         prompt_id = self._prompt_id(payload.get("prompt_id"))
@@ -423,6 +502,7 @@ class App:
                 if context_id:
                     binding = self.store.link_prompt(prompt_id, context_id, thread, deep_link)
                     self.store.delete_meta("pending_prompt")
+                    self.store.delete_meta("pending_prompt_codex")
                     self.broker.emit("prompt_linked", binding)
                     self.broker.emit("linked", {"context_id": context_id, "codex_thread": thread, "codex_deep_link": deep_link})
                     paired_prompt = True
@@ -430,6 +510,30 @@ class App:
                     self.store.delete_meta("pending_prompt")
             else:
                 self.store.delete_meta("pending_prompt")
+
+        if not paired_prompt:
+            pending_codex = self.store.get_meta("pending_prompt_codex")
+            if pending_codex:
+                if float(pending_codex.get("expires_at", 0)) >= now():
+                    prompt_id = self._prompt_id(pending_codex.get("prompt_id"))
+                    current = self.store.prompt_binding(prompt_id)
+                    if self._codex_thread_conflict(prompt_id, thread):
+                        self.store.delete_meta("pending_prompt_codex")
+                        return {"ok": False, "error": "prompt_codex_conflict"}
+                    context_id = str((current or {}).get("context_id") or "").strip() or None
+                    if context_id:
+                        binding = self.store.link_prompt(prompt_id, context_id, thread, deep_link)
+                    else:
+                        binding = self.store.bind_prompt(
+                            prompt_id,
+                            codex_thread=thread,
+                            codex_deep_link=deep_link,
+                        )
+                    self.store.delete_meta("pending_prompt_codex")
+                    self.broker.emit("prompt_linked", binding)
+                    paired_prompt = True
+                else:
+                    self.store.delete_meta("pending_prompt_codex")
 
         pending = None if paired_prompt else self.store.get_meta("pending_link")
         if pending:
@@ -754,6 +858,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, APP.bind_prompt(payload))
             elif parsed.path == "/api/prompt/arm":
                 self._json(HTTPStatus.OK, APP.arm_prompt(payload))
+            elif parsed.path == "/api/prompt/recover-codex":
+                self._json(HTTPStatus.OK, APP.recover_prompt_codex(payload))
             elif parsed.path == "/api/prompt/open-codex":
                 self._json(HTTPStatus.OK, APP.open_prompt_codex(payload))
             elif parsed.path == "/api/prompt/launch-codex":
