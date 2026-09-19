@@ -27,6 +27,25 @@ def _read_overlay() -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def verify_overlay(*, request: Callable[..., dict]) -> dict[str, Any]:
+    """Read back the live GNOME overlay against the daemon's actual cache."""
+    health = request("/api/health", timeout=4.0)
+    state = request("/api/gnome-runtime", timeout=4.0).get("gnome_runtime") or {}
+    overlay = _read_overlay()
+    gates = {
+        "daemon": bool(health.get("ok")),
+        "a11y": bool(health.get("codex_a11y_watch") and not health.get("codex_a11y_error")),
+        "gnome_fresh": bool(time.time() - float(state.get("seen_at") or 0) <= 3),
+        "focused_codex": bool(state.get("focused_codex")),
+        "visible": bool(state.get("visible") and overlay.get("visible")),
+        "context": bool(state.get("context_id") and state.get("context_id") == overlay.get("context_id")),
+        "thread": bool(state.get("codex_thread") and state.get("codex_thread") == overlay.get("codex_thread")),
+        "note": state.get("note") == overlay.get("note"),
+    }
+    return {"result": "PASS" if all(gates.values()) else "BLOCKED", "gates": gates,
+            "blocker": None if all(gates.values()) else "overlay_runtime_mismatch"}
+
+
 def discover_codex_session(
     prompt_id: str,
     *,
@@ -321,19 +340,6 @@ def verify_prompt(
             "codex_thread": visible.get("codex_thread"),
         }
 
-        if original["independent"]:
-            merged = call(
-                "/api/note-mode",
-                {
-                    "context_id": context_id,
-                    "independent": False,
-                    "source": "chrome",
-                    "note": original["note"],
-                },
-            )
-            if not merged.get("ok"):
-                raise RuntimeError("temporary_shared_mode_failed")
-
         if scope == "overlay":
             # The overlay can be checked without touching either note.
             chrome_focus = control("focus")
@@ -343,6 +349,15 @@ def verify_prompt(
             result["result"] = "PASS"
             result["blocker"] = None
             return result
+
+        if original["independent"]:
+            merged = call(
+                "/api/note-mode",
+                {"context_id": context_id, "independent": False,
+                 "source": "chrome", "note": original["note"]},
+            )
+            if not merged.get("ok"):
+                raise RuntimeError("temporary_shared_mode_failed")
 
         token = f"{int(time.time() * 1000)}-{os.getpid()}"
         chrome_marker = f"__ccs_verify_{prompt_id}_chrome_{token}__"
@@ -393,6 +408,12 @@ def verify_prompt(
         )
         if not gates["codex_to_chrome"]:
             raise RuntimeError(f"chrome_focus_failed:{chrome_focus.get('error')}")
+
+        if scope == "prompt":
+            workflowy = control("workflowy")
+            gates["workflowy"] = bool(workflowy.get("ok") and workflowy.get("prompt_id") == prompt_id and workflowy.get("action_present"))
+            if not gates["workflowy"]:
+                raise RuntimeError(f"workflowy_action_missing:{workflowy.get('error')}")
 
     except Exception as exc:
         failure = str(exc)
@@ -454,6 +475,7 @@ def verify_prompt(
         gates.get("note_codex_to_chrome"),
         gates.get("stale_note_guard"),
         gates.get("codex_to_chrome"),
+        gates.get("workflowy") if scope == "prompt" else True,
         gates.get("note_restore") is True,
     )
     result["result"] = "PASS" if all(required) and failure is None else "BLOCKED"

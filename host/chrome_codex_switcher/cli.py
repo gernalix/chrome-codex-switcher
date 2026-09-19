@@ -6,12 +6,13 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .util import overlay_path
-from .verifier import verify_prompt
+from .verifier import verify_prompt, verify_overlay
 
 PORT = int(os.environ.get("CCS_PORT", "43817"))
 BASE = f"http://127.0.0.1:{PORT}"
@@ -113,9 +114,37 @@ def cmd_verify_prompt(args: argparse.Namespace) -> int:
         full=args.full,
         timeout=args.timeout,
         session_root=args.session_root,
+        scope=args.scope,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0 if result.get("result") == "PASS" else 2
+
+
+def cmd_verify_overlay(_args: argparse.Namespace) -> int:
+    result = verify_overlay(request=request)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result["result"] == "PASS" else 2
+
+
+def cmd_self_test(_args: argparse.Namespace) -> int:
+    try:
+        health = request("/api/health")
+        extension = health.get("extension_runtime") or {}
+        gnome = health.get("gnome_runtime") or {}
+        gates = {
+            "daemon": bool(health.get("ok")),
+            "extension_runtime": bool(extension.get("version") and time.time() - float(extension.get("seen_at") or 0) <= 90),
+            "gnome_companion": bool(time.time() - float(gnome.get("seen_at") or 0) <= 3),
+            "a11y": bool(health.get("codex_a11y_watch") and not health.get("codex_a11y_error")),
+        }
+    except Exception as exc:
+        gates = {"daemon": False}
+        error = str(exc)
+    else:
+        error = None
+    result = {"result": "PASS" if all(gates.values()) else "BLOCKED", "gates": gates, "blocker": error or (None if all(gates.values()) else "runtime_health_failed")}
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result["result"] == "PASS" else 2
 
 
 def main() -> None:
@@ -137,7 +166,15 @@ def main() -> None:
     verify.add_argument("--full", action="store_true", help="Exercise navigation, overlay and shared-note propagation with automatic restore")
     verify.add_argument("--timeout", type=float, default=12.0)
     verify.add_argument("--session-root", type=Path, default=Path("~/.codex/sessions"))
+    verify.set_defaults(scope="prompt")
     verify.set_defaults(func=cmd_verify_prompt)
+    for name, scope in (("verify-binding", "binding"), ("verify-note", "note"), ("verify-workflowy", "workflowy")):
+        command = sub.add_parser(name)
+        command.add_argument("prompt_id")
+        command.add_argument("--timeout", type=float, default=12.0)
+        command.set_defaults(func=cmd_verify_prompt, scope=scope, full=scope == "note", session_root=Path("~/.codex/sessions"))
+    sub.add_parser("verify-overlay").set_defaults(func=cmd_verify_overlay)
+    sub.add_parser("self-test").set_defaults(func=cmd_self_test)
     args = parser.parse_args()
     try:
         raise SystemExit(args.func(args))
