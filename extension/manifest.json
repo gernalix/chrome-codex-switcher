@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Chrome ↔ Codex Switcher",
+  "version": "0.1.0",
+  "description": "Pair Chrome tabs with exact Codex Desktop threads, with persistent floating notes.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0PzARKWnZFbCGGSkrczz1vzr5ObiJAks4ShXFGlNZOdHAerx8uU1qpQmwVQOnAS/xwUiCHHfDK5jbpelH0fxMctlLTJCmRNFaXG/Ozu9sYozmFZFdetS5IfEKkB6LS3JX9SUwtGhn0vaqYyKp5oTM5SYG08fz2h894QR1zdKQQnHSuKf367ylQ4TgGQ6sr7RnYmmz9NnH0inmP6HCZoiXS86X7Qefd5o9XU6USg2uLdnEL4eLhAajUMhvfvaPEaf/7OCM707Azwed+QBD+J32E6ocBUN+/dWGN1YZUfsgmSzQugz2uy/N1gRDW/4tm0cY8QoOPp2ofpd0pgFGfoXXQIDAQAB",
+  "permissions": ["tabs", "storage", "sidePanel", "alarms"],
+  "host_permissions": ["http://127.0.0.1:43817/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_title": "Chrome ↔ Codex contexts"},
+  "side_panel": {"default_path": "sidepanel.html"},
+  "commands": {
+    "switch-twin": {
+      "suggested_key": {"default": "Alt+Shift+T", "linux": "Alt+Shift+T"},
+      "description": "Switch from the active Chrome tab to its Codex twin"
+    },
+    "link-twin": {
+      "suggested_key": {"default": "Alt+Shift+L", "linux": "Alt+Shift+L"},
+      "description": "Arm the active Chrome tab to link with the next copied Codex deep link"
+    },
+    "toggle-note": {
+      "suggested_key": {"default": "Alt+Shift+N", "linux": "Alt+Shift+N"},
+      "description": "Show or hide the floating note"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
