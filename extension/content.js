@@ -42,6 +42,147 @@
   let noteTimer = null;
   let uiTimer = null;
   let lastUrl = location.href;
+  const isWorkflowyPage = location.hostname === "workflowy.com" || location.hostname.endsWith(".workflowy.com");
+  let workflowyDashboardObserver = null;
+
+  function installWorkflowyDashboardStyles() {
+    if (!isWorkflowyPage || workflowyDashboardObserver || !document.body) return;
+
+    const styleId = "context-twin-roadmap-theme";
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement("style");
+      style.id = styleId;
+      style.textContent = `
+        :root {
+          --ct-roadmap-danger: #b42318;
+          --ct-roadmap-warning: #b54708;
+          --ct-roadmap-info: #175cd3;
+          --ct-roadmap-integration: #6938ef;
+          --ct-roadmap-success: #067647;
+          --ct-roadmap-muted: #667085;
+          --ct-roadmap-action: #1849a9;
+        }
+        @media (prefers-color-scheme: dark) {
+          :root {
+            --ct-roadmap-danger: #ff7a70;
+            --ct-roadmap-warning: #fdb022;
+            --ct-roadmap-info: #84adff;
+            --ct-roadmap-integration: #b692f6;
+            --ct-roadmap-success: #75e0a7;
+            --ct-roadmap-muted: #98a2b3;
+            --ct-roadmap-action: #84adff;
+          }
+        }
+        .ct-roadmap-danger { color: var(--ct-roadmap-danger) !important; font-weight: 750 !important; }
+        .ct-roadmap-warning { color: var(--ct-roadmap-warning) !important; font-weight: 700 !important; }
+        .ct-roadmap-info { color: var(--ct-roadmap-info) !important; font-weight: 650 !important; }
+        .ct-roadmap-integration { color: var(--ct-roadmap-integration) !important; font-weight: 650 !important; }
+        .ct-roadmap-success { color: var(--ct-roadmap-success) !important; font-weight: 650 !important; }
+        .ct-roadmap-muted { color: var(--ct-roadmap-muted) !important; }
+        .ct-roadmap-next { font-weight: 750 !important; }
+        a[href^="http://127.0.0.1:43817/ui/prompt/"][href$="/launch"] {
+          color: var(--ct-roadmap-action) !important;
+          font-weight: 800 !important;
+        }
+        a[href^="http://127.0.0.1:43817/ui/prompt/"][href$="/bind"],
+        a[href^="http://127.0.0.1:43817/ui/prompt/"][href$="/bind-chrome"],
+        a[href^="http://127.0.0.1:43817/ui/prompt/"][href$="/bind-codex"] {
+          color: var(--ct-roadmap-warning) !important;
+          font-weight: 800 !important;
+        }
+        a[href^="http://127.0.0.1:43817/ui/prompt/"][href$="/verify"] {
+          color: var(--ct-roadmap-info) !important;
+          font-weight: 700 !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    const semanticClasses = [
+      "ct-roadmap-danger",
+      "ct-roadmap-warning",
+      "ct-roadmap-info",
+      "ct-roadmap-integration",
+      "ct-roadmap-success",
+      "ct-roadmap-muted",
+      "ct-roadmap-next"
+    ];
+
+    const classify = raw => {
+      const text = String(raw || "").trim();
+      if (!text || text.length > 360 || text.includes("\n")) return null;
+      if (
+        /^\[\d{6}\]\s+🔴/.test(text)
+        || /^🔴\s/.test(text)
+        || /^Needs fix \(\d+\)$/.test(text)
+        || text.includes("#needs_fix")
+      ) return "ct-roadmap-danger";
+      if (
+        /^🟠\s/.test(text)
+        || /^Waiting \(\d+\)$/.test(text)
+        || /Link (?:Chrome|Codex) mancante/.test(text)
+      ) return "ct-roadmap-warning";
+      if (/^\[\d{6}\]\s+🔵/.test(text) || /^🔵\s/.test(text) || /^Running \(\d+\)$/.test(text)) {
+        return "ct-roadmap-info";
+      }
+      if (/^\[\d{6}\]\s+🟣/.test(text) || /^🟣\s/.test(text) || /^Integration \(\d+\)$/.test(text)) {
+        return "ct-roadmap-integration";
+      }
+      if (
+        /^\[\d{6}\]\s+(?:🟢|✅)/.test(text)
+        || /^(?:🟢|✅)\s/.test(text)
+        || /^(?:Ready|Done) \(\d+\)$/.test(text)
+      ) return "ct-roadmap-success";
+      if (/^👉\s/.test(text)) return "ct-roadmap-next";
+      if (
+        /^(?:PROMPT_ID|Stato canonico|Progetto|Modello|Spiegazione|Pipeline|PR|Coda integrazione|Sorgente audit):/.test(text)
+        || /^Override manuale/.test(text)
+      ) return "ct-roadmap-muted";
+      return null;
+    };
+
+    const styleTextNode = node => {
+      if (!node || node.nodeType !== Node.TEXT_NODE) return;
+      const parent = node.parentElement;
+      if (!parent || parent.closest("#chrome-codex-switcher-host")) return;
+      const kind = classify(node.nodeValue);
+      if (!kind) return;
+      semanticClasses.forEach(name => parent.classList.remove(name));
+      parent.classList.add(kind);
+    };
+
+    const styleSubtree = root => {
+      if (!root) return;
+      if (root.nodeType === Node.TEXT_NODE) {
+        styleTextNode(root);
+        return;
+      }
+      if (root.nodeType !== Node.ELEMENT_NODE && root.nodeType !== Node.DOCUMENT_NODE) return;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let node;
+      let seen = 0;
+      while ((node = walker.nextNode()) && seen < 2500) {
+        styleTextNode(node);
+        seen += 1;
+      }
+    };
+
+    styleSubtree(document.body);
+    workflowyDashboardObserver = new MutationObserver(mutations => {
+      for (const mutation of mutations) {
+        if (mutation.type === "characterData") {
+          styleTextNode(mutation.target);
+          continue;
+        }
+        for (const node of mutation.addedNodes) styleSubtree(node);
+      }
+    });
+    workflowyDashboardObserver.observe(document.body, {
+      subtree: true,
+      childList: true,
+      characterData: true
+    });
+  }
 
   let extensionContextAlive = true;
 
@@ -225,7 +366,8 @@
     await navigator.clipboard.writeText(result.promptText);
   }
 
-  if (location.hostname === "workflowy.com" || location.hostname.endsWith(".workflowy.com")) {
+  if (isWorkflowyPage) {
+    installWorkflowyDashboardStyles();
     document.addEventListener("click", async event => {
       const anchor = event.target.closest?.("a");
       if (!anchor?.href) return;
@@ -301,6 +443,8 @@
     clearInterval(urlWatchTimer);
     clearTimeout(noteTimer);
     clearTimeout(uiTimer);
+    workflowyDashboardObserver?.disconnect();
+    workflowyDashboardObserver = null;
   }, {once: true});
 
   refresh().catch(() => {

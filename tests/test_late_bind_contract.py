@@ -25,6 +25,11 @@ class LateBindContractTests(unittest.TestCase):
         self.assertIn("PENDING_PROMPT_CAPTURE_KEY", background)
         self.assertIn("promptLateBindStatus", content)
         self.assertIn("bind-chrome|bind-codex", content)
+        self.assertIn("installWorkflowyDashboardStyles", content)
+        self.assertIn("MutationObserver", content)
+        self.assertIn("ct-roadmap-danger", content)
+        self.assertIn("ct-roadmap-warning", content)
+        self.assertIn('href$="/bind-codex"', content)
 
     def test_capture_is_limited_to_existing_chatgpt_conversations(self):
         background = (ROOT / "extension" / "background.js").read_text(encoding="utf-8")
@@ -36,7 +41,7 @@ class LateBindContractTests(unittest.TestCase):
         manifest = json.loads((ROOT / "extension" / "manifest.json").read_text(encoding="utf-8"))
         self.assertIn("tabs", manifest["permissions"])
         self.assertIn("storage", manifest["permissions"])
-        self.assertEqual("0.3.2", manifest["version"])
+        self.assertEqual("0.3.3", manifest["version"])
 
 
 if __name__ == "__main__":
