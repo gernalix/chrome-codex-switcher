@@ -237,9 +237,94 @@ async function openPromptCodex(promptId) {
   });
 }
 
+async function findContextTab(payload) {
+  const map = await readTabMap();
+  for (const [tabId, value] of Object.entries(map)) {
+    if (value.contextId !== payload.context_id) continue;
+    try {
+      const tab = await chrome.tabs.get(Number(tabId));
+      const current = canonicalUrl(tab?.url || tab?.pendingUrl || "");
+      const saved = canonicalUrl(value.url || payload.url || "");
+      const openedChat = saved === "https://chatgpt.com/" && /^https:\/\/chatgpt\.com\/(?:c\/|g\/)/.test(current);
+      if (tab && (current === saved || openedChat)) return tab;
+    } catch {}
+  }
+  return null;
+}
+
+async function controlChrome(payload) {
+  const action = payload.action || "probe";
+  let binding = await promptBinding(payload.prompt_id);
+
+  if (action === "ensure" && (!binding?.ok || !binding.binding?.context_id)) {
+    const ensured = await focusPrompt(payload.prompt_id, await currentTab(), {create: true, arm: false});
+    if (!ensured?.ok) return {ok: false, error: ensured?.error || "ensure_context_failed"};
+    binding = await promptBinding(payload.prompt_id);
+  }
+
+  if (!binding?.ok || !binding.binding?.context_id || !binding.binding?.url) {
+    return {ok: false, error: "chrome_context_missing"};
+  }
+
+  const contextPayload = {
+    context_id: binding.binding.context_id,
+    url: binding.binding.url,
+    title: binding.binding.title || ""
+  };
+  if (action === "focus" || action === "ensure") {
+    await focusContext(contextPayload);
+  }
+
+  const tab = await findContextTab(contextPayload);
+  if (!tab) return {ok: false, error: "chrome_tab_not_found", context_id: contextPayload.context_id};
+
+  let rendered = null;
+  try {
+    rendered = await chrome.tabs.sendMessage(tab.id, {type: "controlProbe"});
+  } catch (error) {
+    return {
+      ok: false,
+      error: "chrome_content_unreachable",
+      detail: String(error?.message || error),
+      context_id: contextPayload.context_id,
+      tab_id: tab.id
+    };
+  }
+
+  const [active] = await chrome.tabs.query({active: true, windowId: tab.windowId});
+  return {
+    ok: !!rendered?.ok,
+    context_id: contextPayload.context_id,
+    tab_id: tab.id,
+    window_id: tab.windowId,
+    url: canonicalUrl(tab.url || tab.pendingUrl || ""),
+    active: active?.id === tab.id,
+    rendered
+  };
+}
+
 async function processEvent(event) {
   if (event.type === "focus_chrome") {
     await focusContext(event.payload);
+  } else if (event.type === "control_chrome") {
+    let result;
+    try {
+      result = await controlChrome(event.payload);
+    } catch (error) {
+      result = {ok: false, error: String(error?.message || error)};
+    }
+    try {
+      await api("/api/control-ack", {
+        method: "POST",
+        body: {
+          request_id: event.payload.request_id,
+          surface: "chrome",
+          prompt_id: event.payload.prompt_id,
+          action: event.payload.action,
+          ...result
+        }
+      });
+    } catch {}
   } else if (["linked", "unlinked", "note_changed", "note_mode_changed"].includes(event.type)) {
     const tabs = await chrome.tabs.query({});
     const map = await readTabMap();
