@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html as html_lib
 import json
 import os
 import shutil
@@ -28,6 +29,10 @@ HOST = os.environ.get("CCS_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CCS_PORT", "43817"))
 EXTENSION_ID = "mfpomnbkkfklealhaacbnmelpgpggglg"
 EXTENSION_ORIGIN = f"chrome-extension://{EXTENSION_ID}"
+LOCAL_ORIGINS = {
+    f"http://127.0.0.1:{PORT}",
+    f"http://localhost:{PORT}",
+}
 PENDING_TTL = 120.0
 CLIPBOARD_DUPLICATE_WINDOW = 1.0
 PROMPT_ID_RE = re.compile(r"\d{6}\Z")
@@ -711,6 +716,102 @@ class App:
         write_json_atomic(overlay_path(), state)
 
 
+PROMPT_UI_ACTIONS = {
+    "copy": "Copia prompt",
+    "launch": "Avvia",
+    "bind": "Completa collegamenti",
+    "bind-chrome": "Associa Chrome",
+    "bind-codex": "Associa Codex",
+    "chrome": "Apri Chrome",
+    "codex": "Apri Codex",
+    "verify": "Verifica",
+}
+
+
+def prompt_action_fallback_html(
+    prompt_id: str,
+    action: str,
+    result: dict[str, Any],
+) -> str:
+    if not PROMPT_ID_RE.fullmatch(prompt_id) or action not in PROMPT_UI_ACTIONS:
+        raise ValueError("invalid_prompt_action")
+    label = PROMPT_UI_ACTIONS[action]
+    rendered = html_lib.escape(
+        json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
+    )
+    hint = (
+        "Questa pagina compare solo quando il click WorkFlowy non è stato "
+        "intercettato dall'estensione. Il runtime locale ha quindi eseguito "
+        "il fallback sicuro disponibile per questa azione."
+    )
+    return (
+        "<!doctype html><html lang=\"it\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        f"<title>CCS · {html_lib.escape(label)} · {prompt_id}</title>"
+        "<style>:root{color-scheme:light dark;font-family:system-ui,sans-serif}"
+        "body{max-width:760px;margin:8vh auto;padding:0 22px;line-height:1.45}"
+        ".card{border:1px solid #7775;border-radius:14px;padding:22px}"
+        "h1{font-size:1.35rem;margin:0 0 8px}"
+        ".muted{opacity:.72}pre{white-space:pre-wrap;overflow-wrap:anywhere;"
+        "background:#7772;border-radius:10px;padding:12px}</style></head><body>"
+        "<div class=\"card\">"
+        f"<h1>{html_lib.escape(label)} · prompt {prompt_id}</h1>"
+        f"<p class=\"muted\">{hint}</p>"
+        f"<pre>{rendered}</pre>"
+        "<p><a href=\"https://workflowy.com/\">Torna a WorkFlowy</a></p>"
+        "</div></body></html>"
+    )
+
+
+def run_prompt_fallback_action(prompt_id: str, action: str) -> dict[str, Any]:
+    assert APP is not None
+    if action == "copy":
+        result = APP.prompt_text(prompt_id)
+        if result.get("ok"):
+            result = {
+                **result,
+                "fallback": "prompt_text_shown_below",
+                "note": "Il browser non ha intercettato Copia; il testo resta disponibile in questa pagina.",
+            }
+        return result
+    if action == "verify":
+        from .cli import request
+        from .verifier import verify_prompt
+        return verify_prompt(prompt_id, request=request, full=True, scope="prompt")
+    if action == "codex":
+        return APP.open_prompt_codex({"prompt_id": prompt_id})
+    if action == "chrome":
+        return APP.request_chrome_control(
+            {"prompt_id": prompt_id, "action": "focus"}
+        )
+    if action == "bind-codex":
+        return APP.recover_prompt_codex(
+            {"prompt_id": prompt_id, "force": True}
+        )
+    if action == "launch":
+        prompt = APP.prompt_text(prompt_id)
+        opened = APP.open_prompt_codex({"prompt_id": prompt_id})
+        return {
+            "ok": bool(prompt.get("ok") and opened.get("ok")),
+            "prompt": prompt,
+            "codex": opened,
+            "note": (
+                "Fallback parziale: per creare/associare una nuova chat Codex "
+                "serve il click intercettato dall'estensione nella dashboard."
+            ),
+        }
+    return {
+        "ok": False,
+        "error": "workflowy_extension_interception_required",
+        "prompt_id": prompt_id,
+        "action": action,
+        "note": (
+            "Questa associazione richiede il contesto della tab ChatGPT. "
+            "Ricarica WorkFlowy e riprova con l'estensione attiva."
+        ),
+    }
+
+
 APP: App | None = None
 
 
@@ -723,8 +824,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _origin_allowed(self) -> bool:
         origin = self.headers.get("Origin")
-        # No Origin = trusted local helper/CLI. Browser callers must be our extension.
-        return origin is None or origin == EXTENSION_ORIGIN
+        # No Origin = trusted local helper/CLI. Browser callers may be the
+        # extension or a same-origin fallback page served by this daemon.
+        return origin is None or origin == EXTENSION_ORIGIN or origin in LOCAL_ORIGINS
 
     def _cors(self) -> None:
         origin = self.headers.get("Origin")
@@ -740,6 +842,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self._cors()
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _html(self, status: int, body: str) -> None:
+        raw = body.encode("utf-8")
+        self.send_response(status)
+        self._cors()
+        self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
@@ -774,7 +885,19 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         try:
-            if parsed.path == "/api/health":
+            ui_match = re.fullmatch(
+                r"/ui/prompt/(\d{6})/"
+                r"(copy|launch|bind|bind-chrome|bind-codex|chrome|codex|verify)",
+                parsed.path,
+            )
+            if ui_match:
+                prompt_id, action = ui_match.groups()
+                result = run_prompt_fallback_action(prompt_id, action)
+                self._html(
+                    HTTPStatus.OK,
+                    prompt_action_fallback_html(prompt_id, action, result),
+                )
+            elif parsed.path == "/api/health":
                 self._json(HTTPStatus.OK, APP.health())
             elif parsed.path == "/api/context":
                 context_id = query.get("context_id", [""])[0]

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from chrome_codex_switcher.broker import EventBroker
-from chrome_codex_switcher.daemon import App
+from chrome_codex_switcher.daemon import App, prompt_action_fallback_html
 from chrome_codex_switcher.store import Store
 from chrome_codex_switcher.util import canonical_url, parse_codex_link
 
@@ -361,6 +361,23 @@ class AppTests(unittest.TestCase):
         self.assertEqual(context["note"], "keep me")
         self.assertEqual(context["codex_note"], "keep me")
         self.assertFalse(context["notes_independent"])
+
+
+class PromptFallbackPageTests(unittest.TestCase):
+    def test_fallback_page_is_human_readable_and_escapes_result(self):
+        body = prompt_action_fallback_html(
+            "514458",
+            "copy",
+            {"ok": False, "error": "<bad>"},
+        )
+        self.assertIn("Copia prompt · prompt 514458", body)
+        self.assertIn("fallback sicuro", body)
+        self.assertIn("&lt;bad&gt;", body)
+        self.assertNotIn('{"ok":false', body)
+
+    def test_fallback_page_rejects_unknown_action(self):
+        with self.assertRaisesRegex(ValueError, "invalid_prompt_action"):
+            prompt_action_fallback_html("514458", "unknown", {"ok": False})
 
 
 if __name__ == "__main__":
