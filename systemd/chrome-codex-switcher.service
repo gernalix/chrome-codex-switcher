@@ -1,6 +1,8 @@
 [Unit]
 Description=Chrome-Codex Switcher local bridge
 After=graphical-session.target
+StartLimitIntervalSec=5min
+StartLimitBurst=10
 PartOf=graphical-session.target
 
 [Service]
@@ -8,7 +10,7 @@ Type=simple
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=%h/.local/share/chrome-codex-switcher/host
 ExecStart=/usr/bin/python3 -m chrome_codex_switcher.daemon
-Restart=on-failure
+Restart=always
 RestartSec=1
 
 [Install]
