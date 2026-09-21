@@ -6,7 +6,10 @@ DEST="$HOME/.local/share/gnome-shell/extensions/$UUID"
 mkdir -p "$(dirname "$DEST")"
 rm -rf "$DEST"
 cp -a "$ROOT/gnome-extension@gernalix.github.com" "$DEST"
-echo "Installed GNOME companion (overlay + clipboard bridge) to: $DEST"
+if [[ -d "$DEST/schemas" ]]; then
+  glib-compile-schemas "$DEST/schemas"
+fi
+echo "Installed GNOME companion (overlay + clipboard bridge + global search shortcut) to: $DEST"
 
 if command -v gnome-extensions >/dev/null; then
   gnome-extensions enable "$UUID" 2>/dev/null || true
