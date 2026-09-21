@@ -273,20 +273,30 @@ class Store:
         with self._connect() as db:
             rows = db.execute(
                 """
-                SELECT c.*,t.codex_thread,t.codex_deep_link
-                FROM contexts c LEFT JOIN twins t ON t.context_id=c.id
+                SELECT c.*,
+                       COALESCE(t.codex_thread,p.codex_thread) AS codex_thread,
+                       COALESCE(t.codex_deep_link,p.codex_deep_link) AS codex_deep_link,
+                       p.prompt_id
+                FROM contexts c
+                LEFT JOIN twins t ON t.context_id=c.id
+                LEFT JOIN prompt_bindings p ON p.context_id=c.id
                 ORDER BY c.updated_at DESC
                 """
             ).fetchall()
+        codex_titles = self.get_meta("codex_ui_titles", {})
+        if not isinstance(codex_titles, dict):
+            codex_titles = {}
         result: list[dict[str, Any]] = []
         for row in rows:
             item = self._context_row(row)
             if item is None:
                 continue
             if item.get("codex_thread"):
+                thread = str(item.pop("codex_thread"))
                 item["twin"] = {
-                    "codex_thread": item.pop("codex_thread"),
+                    "codex_thread": thread,
                     "codex_deep_link": item.pop("codex_deep_link"),
+                    "codex_title": str(codex_titles.get(thread) or ""),
                 }
             else:
                 item.pop("codex_thread", None)
