@@ -164,6 +164,13 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
 
     _openSearchDashboard() {
         try {
+            for (const desktopId of ['google-chrome.desktop', 'com.google.Chrome.desktop']) {
+                const app = Gio.DesktopAppInfo.new(desktopId);
+                if (app) {
+                    app.launch_uris([SEARCH_DASHBOARD_URL], null);
+                    return;
+                }
+            }
             Gio.AppInfo.launch_default_for_uri(SEARCH_DASHBOARD_URL, null);
         } catch (error) {
             console.error(`Chrome Codex Switcher dashboard launch failed: ${error}`);
