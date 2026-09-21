@@ -101,7 +101,14 @@ Copying a Codex deep link intentionally acts as “switch to twin” outside pai
 
 ### Search dashboard
 
-Press **Alt+Shift+S** globally from GNOME to open the context dashboard, regardless of which application currently has focus. The GNOME companion owns this system-wide shortcut and opens the localhost dashboard in Google Chrome when installed (falling back to the default browser only if Chrome cannot be resolved). The Chrome extension keeps the same shortcut as an in-Chrome fallback. Start typing immediately to filter by `PROMPT_ID`, Chrome tab title, Codex chat title, or custom note text. Use **↑/↓** to select a result, **Enter** to switch to its Chrome tab, or **Shift+Enter** to open its Codex twin. Mouse users can click a row for Chrome or the explicit **Chrome**/**Codex** buttons.
+Press **Alt+Shift+S** globally from GNOME to open the context dashboard, regardless of which application currently has focus. The GNOME companion owns this system-wide shortcut and opens the localhost dashboard in Google Chrome when installed (falling back to the default browser only if Chrome cannot be resolved). The Chrome extension keeps the same shortcut as an in-Chrome fallback.
+
+The extension bundles its GSettings schema inside its own `schemas/` directory, so a plain system-level `gsettings get org.gnome.shell.extensions.chrome-codex-switcher open-search-dashboard` may report `No such schema`. Verify the bundled schema with:
+
+```bash
+EXT="$HOME/.local/share/gnome-shell/extensions/chrome-codex-switcher@gernalix.github.com"
+GSETTINGS_SCHEMA_DIR="$EXT/schemas" gsettings get org.gnome.shell.extensions.chrome-codex-switcher open-search-dashboard
+``` Start typing immediately to filter by `PROMPT_ID`, Chrome tab title, Codex chat title, or custom note text. Use **↑/↓** to select a result, **Enter** to switch to its Chrome tab, or **Shift+Enter** to open its Codex twin. Mouse users can click a row for Chrome or the explicit **Chrome**/**Codex** buttons.
 
 ### Floating note
 
