@@ -41,6 +41,9 @@
   let context = null;
   let noteTimer = null;
   let uiTimer = null;
+  let pendingUi = {};
+  let pendingGeometry = null;
+  let pendingContextId = null;
   let lastUrl = location.href;
   const isWorkflowyPage = location.hostname === "workflowy.com" || location.hostname.endsWith(".workflowy.com");
   let workflowyDashboardObserver = null;
@@ -222,13 +225,22 @@
 
   function saveUi(extra = {}, geometryOverride = null) {
     if (!context) return;
-    const savedGeometry = geometryOverride || geometry();
+    if (pendingContextId !== context.id) {
+      pendingUi = {};
+      pendingGeometry = null;
+      pendingContextId = context.id;
+    }
+    pendingUi = {...pendingUi, ...extra};
+    pendingGeometry = geometryOverride || geometry();
     clearTimeout(uiTimer);
-    uiTimer = setTimeout(() => send({
-      type: "context:ui",
-      contextId: context.id,
-      ui: {geometry: savedGeometry, ...extra}
-    }), 180);
+    uiTimer = setTimeout(() => {
+      const contextId = pendingContextId;
+      const ui = {geometry: pendingGeometry, ...pendingUi};
+      pendingUi = {};
+      pendingGeometry = null;
+      pendingContextId = null;
+      send({type: "context:ui", contextId, ui});
+    }, 180);
   }
 
   function applyContext(next) {
