@@ -87,7 +87,32 @@ class Store:
 
     def upsert_context(self, context_id: str, url: str, title: str = "") -> dict[str, Any]:
         ts = now()
+        effective_id = context_id
         with self._connect() as db:
+            current = db.execute(
+                "SELECT id FROM contexts WHERE id=?",
+                (context_id,),
+            ).fetchone()
+            if current is None and url:
+                existing = db.execute(
+                    """
+                    SELECT c.id
+                    FROM contexts c
+                    LEFT JOIN prompt_bindings p ON p.context_id=c.id
+                    LEFT JOIN twins t ON t.context_id=c.id
+                    WHERE c.url=?
+                    ORDER BY
+                        CASE WHEN p.prompt_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+                        CASE WHEN t.codex_thread IS NOT NULL THEN 1 ELSE 0 END DESC,
+                        CASE WHEN c.note <> '' OR c.codex_note <> '' THEN 1 ELSE 0 END DESC,
+                        c.updated_at DESC
+                    LIMIT 1
+                    """,
+                    (url,),
+                ).fetchone()
+                if existing is not None:
+                    effective_id = str(existing["id"])
+
             db.execute(
                 """
                 INSERT INTO contexts(id,url,title,created_at,updated_at)
@@ -97,9 +122,9 @@ class Store:
                     title=CASE WHEN excluded.title <> '' THEN excluded.title ELSE contexts.title END,
                     updated_at=excluded.updated_at
                 """,
-                (context_id, url, title, ts, ts),
+                (effective_id, url, title, ts, ts),
             )
-        return self.get_context(context_id) or {}
+        return self.get_context(effective_id) or {}
 
     def get_context(self, context_id: str) -> dict[str, Any] | None:
         with self._connect() as db:

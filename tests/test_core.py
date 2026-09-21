@@ -235,6 +235,29 @@ class AppTests(unittest.TestCase):
         self.assertEqual(context["codex_note"], "Fix PersonalHub")
         self.assertFalse(context["notes_independent"])
 
+    def test_note_survives_reopened_tab_by_canonical_url(self):
+        self.app.upsert_context({
+            "context_id": "ctx-original",
+            "url": "https://chatgpt.com/c/note-test#first",
+            "title": "Original tab",
+        })
+        self.app.set_note({
+            "context_id": "ctx-original",
+            "note": "persist after reopen",
+            "surface": "chrome",
+        })
+
+        reopened = self.app.upsert_context({
+            "context_id": "ctx-new-tab",
+            "url": "https://chatgpt.com/c/note-test#second",
+            "title": "Reopened tab",
+        })
+
+        self.assertEqual("ctx-original", reopened["id"])
+        self.assertEqual("persist after reopen", reopened["note"])
+        self.assertEqual("persist after reopen", reopened["codex_note"])
+        self.assertIsNone(self.store.get_context("ctx-new-tab"))
+
     def test_notes_can_split_and_merge_from_either_surface(self):
         self.app.upsert_context(self.context)
         self.app.set_note({"context_id": "ctx-1", "note": "shared", "surface": "chrome"})

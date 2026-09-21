@@ -85,13 +85,17 @@ async function ensureContext(tab, fallbackUrl = "") {
   }
 
   record = {...record, url, lastSeen: Date.now()};
-  map[String(tab.id)] = record;
-  await writeTabMap(map);
 
   const result = await api("/api/context", {
     method: "POST",
     body: {context_id: record.contextId, url, title: tab.title || ""}
   });
+
+  if (result?.context?.id && result.context.id !== record.contextId) {
+    record = {...record, contextId: result.context.id};
+  }
+  map[String(tab.id)] = record;
+  await writeTabMap(map);
   return result.context;
 }
 
