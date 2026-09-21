@@ -13,7 +13,7 @@ Fedora/Wayland workflow helper for pairing a specific Chrome tab with a specific
 - Shows the note over the active Codex conversation and hides it whenever the active thread cannot be resolved safely, so a stale note is never shown over a different chat.
 - Lets the note be edited from either Chrome or Codex. By default both surfaces share one note; enable **Separate Chrome/Codex notes** to keep two independent values for the same pair.
 - Restores/focuses the right Chrome tab even with many windows/tabs; if the paired tab is closed, it reopens its URL.
-- Provides a searchable Chrome side panel for all contexts.
+- Provides a searchable Chrome side panel for all contexts; **Alt+Shift+S** opens it with the search field focused. It searches `PROMPT_ID`, Chrome titles, Codex chat titles, and note text.
 - Ships a GNOME Shell companion that provides both the Codex floating-note overlay and a native GNOME Wayland clipboard bridge.
 
 The core intentionally avoids Wayland window automation. Chrome controls its own tabs; Codex is addressed through its registered `codex://` deep links.
@@ -98,6 +98,10 @@ While Codex X is active, press Codex's **Copy chat deep link** shortcut. When au
 On GNOME Wayland this does **not** depend on `wl-paste --watch`: the GNOME Shell companion listens to the compositor's clipboard ownership change signal and reads the clipboard through GNOME Shell itself.
 
 Copying a Codex deep link intentionally acts as “switch to twin” outside pairing mode. This can be disabled from the API/CLI later if desired.
+
+### Search dashboard
+
+Press **Alt+Shift+S** from Chrome to open the context dashboard. Start typing immediately to filter by `PROMPT_ID`, Chrome tab title, Codex chat title, or custom note text. Use **↑/↓** to select a result, **Enter** to switch to its Chrome tab, or **Shift+Enter** to open its Codex twin. Mouse users can click a row for Chrome or the explicit **Chrome**/**Codex** buttons.
 
 ### Floating note
 
