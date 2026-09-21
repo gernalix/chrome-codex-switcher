@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.chrome-codex-switcher"
+          path="/org/gnome/shell/extensions/chrome-codex-switcher/">
+    <key name="open-search-dashboard" type="as">
+      <default>['&lt;Alt&gt;&lt;Shift&gt;s']</default>
+      <summary>Open Context Search dashboard</summary>
+      <description>Global GNOME shortcut for opening the Chrome Codex Switcher search dashboard.</description>
+    </key>
+  </schema>
+</schemalist>
