@@ -33,7 +33,22 @@ WRAPPER
 chmod 0755 "$BIN_DIR/context-twin"
 
 systemctl --user daemon-reload
-systemctl --user enable --now chrome-codex-switcher.service
+systemctl --user enable chrome-codex-switcher.service
+systemctl --user restart chrome-codex-switcher.service
+
+bridge_ready=0
+for _ in {1..20}; do
+  if /usr/bin/python3 -c 'import json, urllib.request; p=json.load(urllib.request.urlopen("http://127.0.0.1:43817/api/health", timeout=0.5)); raise SystemExit(0 if p.get("ok") else 1)' >/dev/null 2>&1; then
+    bridge_ready=1
+    break
+  fi
+  sleep 0.1
+done
+if [[ "$bridge_ready" -ne 1 ]]; then
+  echo "ERROR: chrome-codex-switcher daemon did not become healthy after deployment." >&2
+  systemctl --user --no-pager --full status chrome-codex-switcher.service >&2 || true
+  exit 1
+fi
 
 if [[ "${XDG_CURRENT_DESKTOP:-}" == *GNOME* ]] && command -v gnome-extensions >/dev/null; then
   "$PREFIX/contrib/install-gnome-overlay.sh"
