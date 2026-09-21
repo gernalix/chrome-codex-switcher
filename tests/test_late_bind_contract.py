@@ -41,7 +41,7 @@ class LateBindContractTests(unittest.TestCase):
         manifest = json.loads((ROOT / "extension" / "manifest.json").read_text(encoding="utf-8"))
         self.assertIn("tabs", manifest["permissions"])
         self.assertIn("storage", manifest["permissions"])
-        self.assertEqual("0.3.6", manifest["version"])
+        self.assertEqual("0.3.7", manifest["version"])
         self.assertIn("open-search-dashboard", manifest["commands"])
 
 
