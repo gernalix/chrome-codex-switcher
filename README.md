@@ -189,6 +189,8 @@ PYTHONPATH=host python3 -m unittest discover -s tests -v
 python3 -m py_compile host/chrome_codex_switcher/*.py
 ```
 
+CI also runs real-browser end-to-end persistence tests with Chrome for Testing plus the unpacked extension. They verify the complete floating-note state after both a page refresh and closing/reopening the tab: text, X/Y position, width, height, collapsed state, and hidden state.
+
 
 ## Workflowy roadmap cockpit
 

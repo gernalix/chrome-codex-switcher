@@ -41,6 +41,9 @@
   let context = null;
   let noteTimer = null;
   let uiTimer = null;
+  let pendingUi = {};
+  let pendingGeometry = null;
+  let pendingContextId = null;
   let lastUrl = location.href;
   const isWorkflowyPage = location.hostname === "workflowy.com" || location.hostname.endsWith(".workflowy.com");
   let workflowyDashboardObserver = null;
@@ -220,10 +223,24 @@
     return {x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height)};
   }
 
-  function saveUi(extra = {}) {
+  function saveUi(extra = {}, geometryOverride = null) {
     if (!context) return;
+    if (pendingContextId !== context.id) {
+      pendingUi = {};
+      pendingGeometry = null;
+      pendingContextId = context.id;
+    }
+    pendingUi = {...pendingUi, ...extra};
+    pendingGeometry = geometryOverride || geometry();
     clearTimeout(uiTimer);
-    uiTimer = setTimeout(() => send({type: "context:ui", contextId: context.id, ui: {geometry: geometry(), ...extra}}), 180);
+    uiTimer = setTimeout(() => {
+      const contextId = pendingContextId;
+      const ui = {geometry: pendingGeometry, ...pendingUi};
+      pendingUi = {};
+      pendingGeometry = null;
+      pendingContextId = null;
+      send({type: "context:ui", contextId, ui});
+    }, 180);
   }
 
   function applyContext(next) {
@@ -287,8 +304,9 @@
   });
 
   shadow.querySelector(".close").addEventListener("click", () => {
+    const savedGeometry = geometry();
     host.style.display = "none";
-    saveUi({hidden: true});
+    saveUi({hidden: true}, savedGeometry);
   });
 
   shadow.querySelector(".collapse").addEventListener("click", () => {
@@ -355,8 +373,9 @@
     if (message.type === "notLinked") flash("This tab has no Codex twin yet");
     if (message.type === "toggleNote") {
       const hidden = host.style.display === "none";
+      const savedGeometry = hidden ? null : geometry();
       host.style.display = hidden ? "block" : "none";
-      saveUi({hidden: !hidden});
+      saveUi({hidden: !hidden}, savedGeometry);
     }
   });
 

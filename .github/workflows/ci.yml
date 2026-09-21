@@ -27,3 +27,25 @@ jobs:
         run: node --check contrib/gnome-extension@gernalix.github.com/extension.js
       - name: Shell syntax
         run: bash -n install.sh uninstall.sh
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Chrome for Testing and ChromeDriver
+        id: chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          install-chromedriver: true
+      - name: Install Selenium
+        run: python -m pip install 'selenium>=4.30,<5'
+      - name: Full note persistence E2E
+        env:
+          PYTHONPATH: host
+          CCS_DISABLE_CLIPBOARD_WATCH: '1'
+          CHROME_BINARY: ${{ steps.chrome.outputs.chrome-path }}
+          CHROMEDRIVER_PATH: ${{ steps.chrome.outputs.chromedriver-path }}
+        run: xvfb-run -a python tests/e2e/test_note_state_persistence.py
