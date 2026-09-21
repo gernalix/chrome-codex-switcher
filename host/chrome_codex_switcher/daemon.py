@@ -642,6 +642,30 @@ class App:
         self.broker.emit("unlinked", {"context_id": context_id})
         return {"ok": True}
 
+    def focus_dashboard_context(self, payload: dict[str, Any]) -> dict[str, Any]:
+        context_id = str(payload.get("context_id") or "").strip()
+        context = self.store.get_context(context_id)
+        if not context:
+            return {"ok": False, "error": "context_not_found"}
+        target = {
+            "context_id": context["id"],
+            "url": context["url"],
+            "title": context.get("title", ""),
+        }
+        self.broker.emit("focus_chrome", target)
+        return {"ok": True, "action": "focus_chrome", "target": target}
+
+    def open_dashboard_codex(self, payload: dict[str, Any]) -> dict[str, Any]:
+        context_id = str(payload.get("context_id") or "").strip()
+        context = self.store.get_context(context_id)
+        if not context:
+            return {"ok": False, "error": "context_not_found"}
+        return self.switch_from_chrome({
+            "context_id": context["id"],
+            "url": context["url"],
+            "title": context.get("title", ""),
+        })
+
     def extension_heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
         state = {
             "version": str(payload.get("version") or ""),
@@ -714,6 +738,105 @@ class App:
                 "updated_at": now(),
             }
         write_json_atomic(overlay_path(), state)
+
+
+
+def search_dashboard_html() -> str:
+    return r"""<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Context Search</title>
+<style>
+:root{color-scheme:light dark;font-family:system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:Canvas;color:CanvasText}
+header{position:sticky;top:0;background:Canvas;padding:18px 18px 12px;border-bottom:1px solid #7775;z-index:2}
+h1{font-size:1.1rem;margin:0 0 10px}
+#q{width:100%;font:inherit;padding:11px 13px;border:1px solid #7778;border-radius:10px;background:Canvas;color:CanvasText}
+#status{font-size:.82rem;opacity:.65;margin-top:7px;min-height:1.1em}
+main{padding:10px}
+.card{border:1px solid #7775;border-radius:12px;padding:11px 12px;margin:8px 0;cursor:pointer}
+.card.selected{outline:2px solid Highlight;outline-offset:1px}
+.title{font-weight:700;overflow-wrap:anywhere}
+.note{margin-top:5px;opacity:.82;white-space:pre-wrap;overflow-wrap:anywhere}
+.meta{font-size:.82rem;opacity:.68;margin-top:6px;overflow-wrap:anywhere}
+.buttons{display:flex;gap:7px;margin-top:9px}
+button{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid #7777;background:ButtonFace;color:ButtonText;cursor:pointer}
+.empty{padding:32px 12px;text-align:center;opacity:.65}
+</style>
+</head>
+<body>
+<header>
+<h1>Context Search</h1>
+<input id="q" type="search" autocomplete="off" placeholder="Cerca PROMPT_ID, titoli Chrome/Codex, note…">
+<div id="status">Caricamento…</div>
+</header>
+<main id="list" role="listbox" aria-label="Chrome and Codex contexts"></main>
+<script>
+const q=document.querySelector('#q'),list=document.querySelector('#list'),statusEl=document.querySelector('#status');
+let contexts=[],visible=[],selected=0;
+const searchable=item=>[
+  item.prompt_id,item.title,item.twin?.codex_title,item.note,item.codex_note
+].filter(Boolean).join(' ').toLowerCase();
+const noteText=item=>[...new Set([item.note,item.codex_note].filter(Boolean))].join(' · ');
+function select(index){
+  if(!visible.length){selected=0;return}
+  selected=(index+visible.length)%visible.length;
+  [...list.querySelectorAll('.card')].forEach((el,i)=>{
+    const on=i===selected; el.classList.toggle('selected',on); el.setAttribute('aria-selected',on?'true':'false');
+    if(on)el.scrollIntoView({block:'nearest'});
+  });
+}
+async function action(item,target){
+  const path=target==='codex'?'/api/dashboard/open-codex':'/api/dashboard/focus-chrome';
+  statusEl.textContent=target==='codex'?'Apro Codex…':'Passo alla scheda Chrome…';
+  try{
+    const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({context_id:item.id})});
+    const data=await r.json();
+    if(!data.ok)throw new Error(data.error||'azione fallita');
+    statusEl.textContent=target==='codex'?'Codex aperto':'Comando inviato a Chrome';
+  }catch(e){statusEl.textContent='Errore: '+e.message}
+}
+function render(){
+  const needle=q.value.trim().toLowerCase();
+  visible=contexts.filter(item=>!needle||searchable(item).includes(needle));
+  list.textContent='';
+  if(!visible.length){selected=0;const e=document.createElement('div');e.className='empty';e.textContent='Nessun risultato';list.append(e);return}
+  selected=Math.min(selected,visible.length-1);
+  visible.forEach((item,index)=>{
+    const card=document.createElement('section');card.className='card'+(index===selected?' selected':'');card.role='option';
+    card.setAttribute('aria-selected',index===selected?'true':'false');card.onclick=()=>action(item,'chrome');card.onmouseenter=()=>select(index);
+    const title=document.createElement('div');title.className='title';title.textContent=item.title||item.url||'Contesto Chrome senza titolo';
+    const note=document.createElement('div');note.className='note';note.textContent=noteText(item);
+    const meta=document.createElement('div');meta.className='meta';
+    const bits=[];if(item.prompt_id)bits.push('PROMPT_ID '+item.prompt_id);
+    if(item.twin?.codex_title)bits.push('Codex: '+item.twin.codex_title);else if(item.twin?.codex_thread)bits.push('Codex thread: '+item.twin.codex_thread);else bits.push('Nessun Codex twin');
+    meta.textContent=bits.join(' · ');
+    const buttons=document.createElement('div');buttons.className='buttons';
+    const chromeBtn=document.createElement('button');chromeBtn.textContent='Chrome';chromeBtn.onclick=e=>{e.stopPropagation();action(item,'chrome')};buttons.append(chromeBtn);
+    if(item.twin){const codexBtn=document.createElement('button');codexBtn.textContent='Codex';codexBtn.onclick=e=>{e.stopPropagation();action(item,'codex')};buttons.append(codexBtn)}
+    card.append(title,note,meta,buttons);list.append(card);
+  });
+}
+async function load(){
+  try{
+    const r=await fetch('/api/list',{cache:'no-store'}),data=await r.json();
+    contexts=data.contexts||[];statusEl.textContent=contexts.length+' contesti';render();
+  }catch(e){statusEl.textContent='Daemon non raggiungibile: '+e.message}
+}
+q.addEventListener('input',()=>{selected=0;render()});
+q.addEventListener('keydown',e=>{
+  if(e.key==='ArrowDown'){e.preventDefault();select(selected+1)}
+  else if(e.key==='ArrowUp'){e.preventDefault();select(selected-1)}
+  else if(e.key==='Enter'){e.preventDefault();action(visible[selected]||visible[0],e.shiftKey?'codex':'chrome')}
+  else if(e.key==='Escape'&&q.value){e.preventDefault();q.value='';selected=0;render()}
+});
+q.focus();load();setInterval(load,5000);
+</script>
+</body>
+</html>"""
 
 
 PROMPT_UI_ACTIONS = {
@@ -890,7 +1013,9 @@ class Handler(BaseHTTPRequestHandler):
                 r"(copy|launch|bind|bind-chrome|bind-codex|chrome|codex|verify)",
                 parsed.path,
             )
-            if ui_match:
+            if parsed.path == "/ui/search":
+                self._html(HTTPStatus.OK, search_dashboard_html())
+            elif ui_match:
                 prompt_id, action = ui_match.groups()
                 result = run_prompt_fallback_action(prompt_id, action)
                 self._html(
@@ -967,6 +1092,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, APP.invalidate_codex_overlay(kind))
             elif parsed.path == "/api/unlink":
                 self._json(HTTPStatus.OK, APP.unlink(str(payload["context_id"])))
+            elif parsed.path == "/api/dashboard/focus-chrome":
+                self._json(HTTPStatus.OK, APP.focus_dashboard_context(payload))
+            elif parsed.path == "/api/dashboard/open-codex":
+                self._json(HTTPStatus.OK, APP.open_dashboard_codex(payload))
             elif parsed.path == "/api/settings":
                 self._json(HTTPStatus.OK, APP.set_settings(payload))
             elif parsed.path == "/api/extension-heartbeat":
