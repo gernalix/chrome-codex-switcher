@@ -790,6 +790,7 @@ function select(index){
   });
 }
 async function action(item,target){
+  if(!item)return;
   const path=target==='codex'?'/api/dashboard/open-codex':'/api/dashboard/focus-chrome';
   statusEl.textContent=target==='codex'?'Apro Codex…':'Passo alla scheda Chrome…';
   try{
