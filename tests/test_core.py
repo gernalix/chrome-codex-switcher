@@ -119,7 +119,7 @@ class AppTests(unittest.TestCase):
         for token in ("item.prompt_id", "item.title", "item.twin?.codex_title", "item.note", "item.codex_note"):
             self.assertIn(token, page)
         self.assertIn("ArrowDown", page)
-        self.assertIn("Shift", page)
+        self.assertIn("shiftKey", page)
 
     def test_prompt_arm_requires_real_context(self):
         with self.assertRaisesRegex(ValueError, "prompt_context_missing"):
