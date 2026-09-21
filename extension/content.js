@@ -220,10 +220,15 @@
     return {x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height)};
   }
 
-  function saveUi(extra = {}) {
+  function saveUi(extra = {}, geometryOverride = null) {
     if (!context) return;
+    const savedGeometry = geometryOverride || geometry();
     clearTimeout(uiTimer);
-    uiTimer = setTimeout(() => send({type: "context:ui", contextId: context.id, ui: {geometry: geometry(), ...extra}}), 180);
+    uiTimer = setTimeout(() => send({
+      type: "context:ui",
+      contextId: context.id,
+      ui: {geometry: savedGeometry, ...extra}
+    }), 180);
   }
 
   function applyContext(next) {
@@ -287,8 +292,9 @@
   });
 
   shadow.querySelector(".close").addEventListener("click", () => {
+    const savedGeometry = geometry();
     host.style.display = "none";
-    saveUi({hidden: true});
+    saveUi({hidden: true}, savedGeometry);
   });
 
   shadow.querySelector(".collapse").addEventListener("click", () => {
@@ -355,8 +361,9 @@
     if (message.type === "notLinked") flash("This tab has no Codex twin yet");
     if (message.type === "toggleNote") {
       const hidden = host.style.display === "none";
+      const savedGeometry = hidden ? null : geometry();
       host.style.display = hidden ? "block" : "none";
-      saveUi({hidden: !hidden});
+      saveUi({hidden: !hidden}, savedGeometry);
     }
   });
 
