@@ -246,6 +246,11 @@ class AppTests(unittest.TestCase):
             "note": "persist after reopen",
             "surface": "chrome",
         })
+        self.app.set_ui({
+            "context_id": "ctx-original",
+            "geometry": {"x": 144, "y": 88, "width": 420, "height": 260},
+            "collapsed": True,
+        })
 
         reopened = self.app.upsert_context({
             "context_id": "ctx-new-tab",
@@ -256,7 +261,49 @@ class AppTests(unittest.TestCase):
         self.assertEqual("ctx-original", reopened["id"])
         self.assertEqual("persist after reopen", reopened["note"])
         self.assertEqual("persist after reopen", reopened["codex_note"])
+        self.assertEqual(
+            {"x": 144, "y": 88, "width": 420, "height": 260},
+            reopened["geometry"],
+        )
+        self.assertTrue(reopened["collapsed"])
         self.assertIsNone(self.store.get_context("ctx-new-tab"))
+
+    def test_url_recovery_prefers_saved_geometry_over_newer_empty_legacy_context(self):
+        url = "https://chatgpt.com/c/legacy-note"
+        with self.store._connect() as db:
+            db.execute(
+                """INSERT INTO contexts(
+                       id,url,title,note,codex_note,notes_independent,geometry_json,
+                       hidden,collapsed,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    "ctx-with-layout", url, "Saved layout", "", "", 0,
+                    '{"x":70,"y":90,"width":360,"height":240}',
+                    0, 0, 1.0, 1.0,
+                ),
+            )
+            db.execute(
+                """INSERT INTO contexts(
+                       id,url,title,note,codex_note,notes_independent,geometry_json,
+                       hidden,collapsed,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    "ctx-empty-newer", url, "Empty duplicate", "", "", 0,
+                    "{}", 0, 0, 2.0, 2.0,
+                ),
+            )
+
+        reopened = self.app.upsert_context({
+            "context_id": "ctx-reopened",
+            "url": url,
+            "title": "Reopened",
+        })
+
+        self.assertEqual("ctx-with-layout", reopened["id"])
+        self.assertEqual(
+            {"x": 70, "y": 90, "width": 360, "height": 240},
+            reopened["geometry"],
+        )
 
     def test_notes_can_split_and_merge_from_either_surface(self):
         self.app.upsert_context(self.context)

@@ -104,7 +104,10 @@ class Store:
                     ORDER BY
                         CASE WHEN p.prompt_id IS NOT NULL THEN 1 ELSE 0 END DESC,
                         CASE WHEN t.codex_thread IS NOT NULL THEN 1 ELSE 0 END DESC,
-                        CASE WHEN c.note <> '' OR c.codex_note <> '' THEN 1 ELSE 0 END DESC,
+                        CASE WHEN c.note <> '' OR c.codex_note <> ''
+                                  OR c.geometry_json <> '{}'
+                                  OR c.hidden <> 0 OR c.collapsed <> 0
+                             THEN 1 ELSE 0 END DESC,
                         c.updated_at DESC
                     LIMIT 1
                     """,

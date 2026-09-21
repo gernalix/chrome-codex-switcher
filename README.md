@@ -9,7 +9,7 @@ Fedora/Wayland workflow helper for pairing a specific Chrome tab with a specific
 - Optionally binds that pair to an explicit six-digit roadmap `PROMPT_ID`; the ID is never inferred from URLs, tab titles or Codex deep links.
 - Chrome → Codex: one extension shortcut opens the exact paired Codex thread with `gio open`.
 - Codex → Chrome: press Codex Desktop's **Copy chat deep link** shortcut; on GNOME Wayland the GNOME companion observes the clipboard change inside the compositor and forwards the `codex://threads/...` value to the daemon, which focuses the exact paired Chrome tab.
-- Persists notes and pairings in SQLite. Notes are resolved by canonical page URL as a fallback, so refreshing or reopening the same Chrome page restores the existing context instead of creating an empty note.
+- Persists the full floating-note state in SQLite: text, position, size, collapsed/hidden state, and pairings. Canonical page URL is used as a fallback, so refreshing or reopening the same Chrome page restores the existing note and layout instead of creating an empty/default one.
 - Shows the note over the active Codex conversation and hides it whenever the active thread cannot be resolved safely, so a stale note is never shown over a different chat.
 - Lets the note be edited from either Chrome or Codex. By default both surfaces share one note; enable **Separate Chrome/Codex notes** to keep two independent values for the same pair.
 - Restores/focuses the right Chrome tab even with many windows/tabs; if the paired tab is closed, it reopens its URL.
