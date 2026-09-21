@@ -201,18 +201,25 @@ CI also runs real-browser end-to-end persistence tests with Chrome for Testing p
 
 ## Workflowy roadmap cockpit
 
-The localhost API supports explicit roadmap bindings:
+The localhost API supports explicit roadmap bindings and desktop-first launch:
 
 - `GET /api/prompt?prompt_id=514458` returns the current Chrome/Codex binding.
 - `POST /api/prompt/bind` binds a known Chrome context to that exact PROMPT_ID.
 - `POST /api/prompt/arm` marks that exact prompt as the next Codex deep-link association.
 - `POST /api/prompt/open-codex` opens the exact bound Codex thread.
+- `POST /api/prompt/launch-codex` launches a roadmap prompt directly toward Codex Desktop.
 
 The Chrome extension recognizes Workflowy action links under
-`http://127.0.0.1:43817/ui/prompt/<PROMPT_ID>/...`. From Workflowy it can copy
-the canonical prompt through the local Workflowy bridge, open/focus the prompt's
-ChatGPT tab in the same Chrome window, and open the exact Codex thread.
+`http://127.0.0.1:43817/ui/prompt/<PROMPT_ID>/...`. **🚀 Avvia is Codex-Desktop-first**:
+it no longer creates or focuses a ChatGPT Chrome tab and it does not use the clipboard.
+The daemon reads the canonical prompt plus `project_id`, `project_name`, `repo`,
+`model`, and `reasoning` from the local Workflowy/roadmap bridge, records that exact
+request as `pending_desktop_launch`, arms the next native Codex association, emits
+`desktop_launch_requested`, and opens `codex://threads/new`.
 
-If a prompt has no Chrome context yet, the launch action creates one and stores
-the PROMPT_ID explicitly before Codex pairing. The PROMPT_ID is never guessed
-from the browser URL or the Codex deep link.
+Chrome pairing remains available only through the explicit Chrome/link actions; it is
+not a prerequisite for **Avvia**. The staged desktop-launch record is the contract used
+by the native AT-SPI launcher to select the requested Codex project/model/reasoning,
+fill the composer without sending, and correlate the resulting thread to the explicit
+PROMPT_ID. If an exact requested setting is unavailable, the native launcher must fail
+closed rather than silently select a fallback.
