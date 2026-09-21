@@ -89,6 +89,22 @@ class AppTests(unittest.TestCase):
         self.assertEqual("codex://threads/thread-prompt", binding["codex_deep_link"])
         self.assertEqual("ctx-1", self.store.twin_by_thread("thread-prompt")["context_id"])
 
+    def test_dashboard_contexts_include_prompt_id_and_codex_title(self):
+        self.app.upsert_context(self.context)
+        self.store.link_prompt(
+            "514458",
+            "ctx-1",
+            "thread-dashboard",
+            "codex://threads/thread-dashboard",
+        )
+        self.store.remember_codex_title("thread-dashboard", "Fix dashboard UI")
+        self.store.set_note("ctx-1", "custom searchable note")
+
+        item = next(row for row in self.store.list_contexts() if row["id"] == "ctx-1")
+        self.assertEqual("514458", item["prompt_id"])
+        self.assertEqual("Fix dashboard UI", item["twin"]["codex_title"])
+        self.assertEqual("custom searchable note", item["note"])
+
     def test_prompt_arm_requires_real_context(self):
         with self.assertRaisesRegex(ValueError, "prompt_context_missing"):
             self.app.arm_prompt({"prompt_id": "514458"})
