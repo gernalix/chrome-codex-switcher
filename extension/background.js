@@ -431,25 +431,17 @@ async function openPromptCodex(promptId) {
   });
 }
 
-async function launchPrompt(promptId, sourceTab) {
-  const chromeSide = await focusPrompt(promptId, sourceTab, {create: true, arm: true});
-  if (!chromeSide?.ok) return chromeSide;
-
-  // Open Codex only after the Chrome context is bound/armed. Because this is
-  // the final external launch in the sequence, Codex keeps the final focus.
+async function launchPrompt(promptId, _sourceTab) {
+  // Roadmap prompts are coding tasks: launch Codex Desktop directly. Chrome
+  // remains available only through the explicit Chrome/link actions.
   const codexSide = await api("/api/prompt/launch-codex", {
     method: "POST",
     body: {prompt_id: promptId}
   });
   if (!codexSide?.ok) {
-    return {
-      ok: false,
-      error: codexSide?.error || "codex_launch_failed",
-      chrome: chromeSide,
-      codex: codexSide
-    };
+    return {ok: false, error: codexSide?.error || "codex_launch_failed", codex: codexSide};
   }
-  return {ok: true, chrome: chromeSide, codex: codexSide};
+  return {ok: true, codex: codexSide};
 }
 
 async function findContextTab(payload) {
