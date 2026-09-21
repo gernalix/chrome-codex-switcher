@@ -77,12 +77,24 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         options.add_argument(f"--user-data-dir={cls.tmp_path / 'chrome-profile'}")
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-gpu")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--window-size=1280,900")
 
         driver_path = os.environ.get("CHROMEDRIVER_PATH")
-        service = Service(executable_path=driver_path) if driver_path else Service()
-        cls.driver = webdriver.Chrome(service=service, options=options)
+        driver_log = cls.tmp_path / "chromedriver.log"
+        service = Service(
+            executable_path=driver_path,
+            service_args=["--verbose"],
+            log_output=str(driver_log),
+        ) if driver_path else Service(service_args=["--verbose"], log_output=str(driver_log))
+        try:
+            cls.driver = webdriver.Chrome(service=service, options=options)
+        except Exception:
+            if driver_log.exists():
+                print(driver_log.read_text(encoding="utf-8", errors="replace"), file=sys.stderr)
+            raise
         cls.wait = WebDriverWait(cls.driver, 15)
 
     @classmethod
