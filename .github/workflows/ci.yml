@@ -25,8 +25,10 @@ jobs:
         run: node --check extension/background.js && node --check extension/content.js && node --check extension/sidepanel.js
       - name: Validate GNOME companion JavaScript
         run: node --check contrib/gnome-extension@gernalix.github.com/extension.js
+      - name: Validate GNOME settings schema
+        run: glib-compile-schemas --strict --dry-run contrib/gnome-extension@gernalix.github.com/schemas
       - name: Shell syntax
-        run: bash -n install.sh uninstall.sh
+        run: bash -n install.sh uninstall.sh contrib/install-gnome-overlay.sh
 
   e2e:
     runs-on: ubuntu-latest
