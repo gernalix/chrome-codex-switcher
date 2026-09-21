@@ -365,6 +365,51 @@ class AppTests(unittest.TestCase):
         self.assertEqual(merged["context"]["note"], "codex only")
         self.assertEqual(merged["context"]["codex_note"], "codex only")
 
+    def test_enabling_split_uses_current_ui_value_before_debounce_flush(self):
+        self.app.upsert_context(self.context)
+        self.app.set_note({"context_id": "ctx-1", "note": "persisted old", "surface": "chrome"})
+
+        enabled = self.app.set_note_mode({
+            "context_id": "ctx-1",
+            "independent": True,
+            "source": "chrome",
+            "note": "current unsaved",
+        })
+
+        self.assertTrue(enabled["context"]["notes_independent"])
+        self.assertEqual(enabled["context"]["note"], "current unsaved")
+        self.assertEqual(enabled["context"]["codex_note"], "current unsaved")
+
+    def test_two_by_two_pairing_and_ui_state_remain_isolated(self):
+        other = {"context_id": "ctx-2", "url": "https://chatgpt.com/c/def", "title": "Chat B"}
+        self.app.arm_link(self.context)
+        self.app.handle_clipboard("codex://threads/thread-1", codex_title="Same visible title")
+        self.app._last_clipboard_at = 0
+        self.app.arm_link(other)
+        self.app.handle_clipboard("codex://threads/thread-2", codex_title="Same visible title")
+
+        self.app.set_ui({
+            "context_id": "ctx-1",
+            "geometry": {"x": 10, "y": 20, "width": 310, "height": 210},
+            "hidden": True,
+            "collapsed": False,
+        })
+        self.app.set_ui({
+            "context_id": "ctx-2",
+            "geometry": {"x": 70, "y": 80, "width": 390, "height": 260},
+            "hidden": False,
+            "collapsed": True,
+        })
+
+        self.assertEqual(self.store.twin_by_context("ctx-1")["codex_thread"], "thread-1")
+        self.assertEqual(self.store.twin_by_context("ctx-2")["codex_thread"], "thread-2")
+        self.assertIsNone(self.store.thread_by_codex_title("Same visible title"))
+        first = self.store.get_context("ctx-1")
+        second = self.store.get_context("ctx-2")
+        self.assertNotEqual(first["geometry"], second["geometry"])
+        self.assertTrue(first["hidden"])
+        self.assertTrue(second["collapsed"])
+
     def test_accessible_title_resolves_thread_and_hides_stale_overlay(self):
         self.app.arm_link(self.context)
         unknown = self.app.handle_codex_ui_state(True, "Indaga logout Fedora e profilo")
@@ -427,7 +472,10 @@ class AppTests(unittest.TestCase):
 
     def test_gnome_heartbeat_is_normalized(self):
         result = self.app.gnome_heartbeat({
+            "source_version": "8",
             "focused_codex": "1",
+            "focused_app_id": "chatgpt.desktop",
+            "focused_wm_class": "chatgpt",
             "visible": "true",
             "context_id": "ctx-1",
             "codex_thread": "thread-1",
@@ -436,6 +484,8 @@ class AppTests(unittest.TestCase):
         })
         state = result["gnome_runtime"]
         self.assertTrue(state["focused_codex"])
+        self.assertEqual("8", state["source_version"])
+        self.assertEqual("chatgpt.desktop", state["focused_app_id"])
         self.assertTrue(state["visible"])
         self.assertFalse(state["notes_independent"])
         self.assertEqual("hello", state["note"])

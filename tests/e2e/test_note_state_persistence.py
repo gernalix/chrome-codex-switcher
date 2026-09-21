@@ -11,7 +11,7 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -141,10 +141,37 @@ class NoteStatePersistenceE2E(unittest.TestCase):
             lambda driver: driver.execute_script(
                 """
                 const host = document.querySelector("#chrome-codex-switcher-host");
-                return !!host?.shadowRoot?.querySelector(".note");
+                const root = host?.shadowRoot;
+                return !!root?.querySelector(".note") && !!root.querySelector(".status")?.textContent;
                 """
             )
         )
+
+    def _post(self, path: str, payload: dict) -> dict:
+        request = Request(
+            f"http://127.0.0.1:{DAEMON_PORT}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=4) as response:
+            return json.load(response)
+
+    def _context_for_url(self, canonical_url: str) -> dict:
+        deadline = time.time() + 8
+        last = None
+        while time.time() < deadline:
+            with sqlite3.connect(self.db_path) as db:
+                db.row_factory = sqlite3.Row
+                row = db.execute(
+                    "SELECT * FROM contexts WHERE url=? ORDER BY updated_at DESC LIMIT 1",
+                    (canonical_url,),
+                ).fetchone()
+            if row:
+                last = dict(row)
+                return last
+            time.sleep(0.1)
+        self.fail(f"context not created for {canonical_url}: {last!r}")
 
     def _snapshot(self) -> dict:
         return self.driver.execute_script(
@@ -180,6 +207,7 @@ class NoteStatePersistenceE2E(unittest.TestCase):
             const host = document.querySelector("#chrome-codex-switcher-host");
             const root = host.shadowRoot;
             const note = root.querySelector(".note");
+            note.focus();
             note.value = arguments[0];
             note.dispatchEvent(new Event("input", {bubbles: true}));
             host.style.left = arguments[1] + "px";
@@ -193,8 +221,20 @@ class NoteStatePersistenceE2E(unittest.TestCase):
             expected["width"],
             expected["height"],
         )
+        # Wait for the real debounced note write before moving focus to the UI controls.
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            with sqlite3.connect(self.db_path) as db:
+                row = db.execute(
+                    "SELECT note FROM contexts WHERE url=? ORDER BY updated_at DESC LIMIT 1",
+                    (self.current_canonical_url,),
+                ).fetchone()
+            if row and row[0] == note_text:
+                break
+            time.sleep(0.1)
+        else:
+            self.fail(f"note debounce did not persist {note_text!r}: {row!r}")
         # The ResizeObserver persists geometry through the normal content-script path.
-        time.sleep(0.35)
         self.driver.execute_script(
             'document.querySelector("#chrome-codex-switcher-host").shadowRoot.querySelector(".collapse").click()'
         )
@@ -243,7 +283,13 @@ class NoteStatePersistenceE2E(unittest.TestCase):
 
     def _assert_full_state(self, expected: dict) -> None:
         self._wait_extension()
-        actual = self._snapshot()
+        actual = None
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            actual = self._snapshot()
+            if actual == expected:
+                return
+            time.sleep(0.1)
         self.assertEqual(expected, actual)
 
     def test_refresh_restores_text_geometry_and_visibility_state(self) -> None:
@@ -273,6 +319,151 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self.driver.get(self._url(path, "after-reopen"))
 
         self._assert_full_state(expected)
+
+    def test_recovery_reinjects_existing_tab_without_duplicate_or_manual_refresh(self) -> None:
+        path = "extension-reload-case"
+        self.current_canonical_url = self._canonical_url(path)
+        self.driver.get(self._url(path, "before-extension-reload"))
+        self._wait_extension()
+        old_marker = "stale-instance-marker"
+        self.driver.execute_script(
+            'document.querySelector("#chrome-codex-switcher-host").dataset.instance = arguments[0]',
+            old_marker,
+        )
+
+        original = self.driver.current_window_handle
+        self.driver.switch_to.new_window("tab")
+        self.driver.get("chrome-extension://mfpomnbkkfklealhaacbnmelpgpggglg/sidepanel.html")
+        recovered = self.driver.execute_async_script(
+            """
+            const done = arguments[0];
+            (async () => {
+              const tabs = await chrome.tabs.query({});
+              const tab = tabs.find(item => (item.url || '').includes('/extension-reload-case'));
+              if (!tab?.id) throw new Error('fixture_tab_missing');
+              await chrome.scripting.executeScript({
+                target: {tabId: tab.id},
+                func: () => {
+                  document.getElementById('chrome-codex-switcher-host')?.remove();
+                  window.__chromeCodexSwitcherLoaded = false;
+                }
+              });
+              await chrome.scripting.executeScript({target: {tabId: tab.id}, files: ['content.js']});
+              done({ok: true});
+            })().catch(error => done({ok: false, error: String(error)}));
+            """
+        )
+        self.assertEqual({"ok": True}, recovered)
+        self.driver.switch_to.window(original)
+
+        try:
+            WebDriverWait(self.driver, 12).until(lambda driver: driver.execute_script(
+                """
+                const hosts = document.querySelectorAll('#chrome-codex-switcher-host');
+                return hosts.length === 1
+                  && hosts[0].dataset.instance !== arguments[0]
+                  && !!hosts[0].shadowRoot?.querySelector('.note');
+                """,
+                old_marker,
+            ))
+        except Exception:
+            page_state = self.driver.execute_script(
+                """
+                const hosts = [...document.querySelectorAll('#chrome-codex-switcher-host')];
+                return hosts.map(host => ({instance: host.dataset.instance || '', connected: host.isConnected}));
+                """
+            )
+            with urlopen(f"http://127.0.0.1:{DAEMON_PORT}/api/health", timeout=4) as response:
+                health = json.load(response)
+            print(
+                f"reload diagnostic page={page_state!r} health={health!r}",
+                file=sys.stderr,
+            )
+            raise
+        probe = self.driver.execute_script(
+            """
+            const hosts = document.querySelectorAll('#chrome-codex-switcher-host');
+            return {count: hosts.length, note: !!hosts[0]?.shadowRoot?.querySelector('.note')};
+            """
+        )
+        self.assertEqual({"count": 1, "note": True}, probe)
+
+    def test_split_merge_notes_uses_current_value_and_persists_both_surfaces(self) -> None:
+        path = "note-mode-case"
+        canonical = self._canonical_url(path)
+        self.current_canonical_url = canonical
+        self.driver.get(self._url(path, "mode"))
+        self._wait_extension()
+        context = self._context_for_url(canonical)
+
+        self.driver.execute_script(
+            """
+            const root = document.querySelector('#chrome-codex-switcher-host').shadowRoot;
+            const note = root.querySelector('.note');
+            note.focus();
+            note.value = 'current shared value';
+            note.dispatchEvent(new Event('input', {bubbles: true}));
+            root.querySelector('.independent').click();
+            """
+        )
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            with sqlite3.connect(self.db_path) as db:
+                row = db.execute(
+                    "SELECT note,codex_note,notes_independent FROM contexts WHERE id=?",
+                    (context["id"],),
+                ).fetchone()
+            if row == ("current shared value", "current shared value", 1):
+                break
+            time.sleep(0.1)
+        else:
+            self.fail(f"split state did not converge: {row!r}")
+
+        self.driver.execute_script(
+            """
+            const note = document.querySelector('#chrome-codex-switcher-host').shadowRoot.querySelector('.note');
+            note.focus();
+            note.value = 'chrome independent';
+            note.dispatchEvent(new Event('input', {bubbles: true}));
+            """
+        )
+        self._post("/api/note", {
+            "context_id": context["id"],
+            "note": "codex independent",
+            "surface": "codex",
+        })
+        time.sleep(0.5)
+        with sqlite3.connect(self.db_path) as db:
+            split = db.execute(
+                "SELECT note,codex_note,notes_independent FROM contexts WHERE id=?",
+                (context["id"],),
+            ).fetchone()
+        self.assertEqual(("chrome independent", "codex independent", 1), split)
+
+        merged = self._post("/api/note-mode", {
+            "context_id": context["id"],
+            "independent": False,
+            "source": "codex",
+            "note": "codex independent",
+        })["context"]
+        self.assertEqual("codex independent", merged["note"])
+        self.assertEqual("codex independent", merged["codex_note"])
+        self.assertFalse(merged["notes_independent"])
+
+        repeated = self._post("/api/note-mode", {
+            "context_id": context["id"],
+            "independent": False,
+            "source": "codex",
+            "note": "codex independent",
+        })["context"]
+        self.assertEqual(merged["note"], repeated["note"])
+
+    def test_daemon_dashboard_is_not_an_overlay_target(self) -> None:
+        self.driver.get(f"http://127.0.0.1:{DAEMON_PORT}/ui/search")
+        time.sleep(0.5)
+        self.assertIsNone(self.driver.execute_script(
+            'return document.querySelector("#chrome-codex-switcher-host")'
+        ))
 
 
 if __name__ == "__main__":

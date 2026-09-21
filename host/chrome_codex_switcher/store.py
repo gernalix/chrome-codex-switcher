@@ -173,10 +173,14 @@ class Store:
         with self._connect() as db:
             if independent:
                 if not was_independent:
-                    shared = str(context.get("note") or "")
+                    shared = (
+                        str(current_note)
+                        if current_note is not None
+                        else str(context.get("note") or "")
+                    )
                     db.execute(
-                        "UPDATE contexts SET codex_note=?, notes_independent=1, updated_at=? WHERE id=?",
-                        (shared, now(), context_id),
+                        "UPDATE contexts SET note=?, codex_note=?, notes_independent=1, updated_at=? WHERE id=?",
+                        (shared, shared, now(), context_id),
                     )
                 else:
                     db.execute(

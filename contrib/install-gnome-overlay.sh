@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-UUID="chrome-codex-switcher@gernalix.github.com"
+UUID="chrome-codex-switcher-v2@gernalix.github.com"
+LEGACY_UUID="chrome-codex-switcher@gernalix.github.com"
 DEST="$HOME/.local/share/gnome-shell/extensions/$UUID"
+if command -v gnome-extensions >/dev/null && gnome-extensions list --enabled 2>/dev/null | grep -Fxq "$UUID"; then
+  gnome-extensions disable "$UUID"
+fi
 mkdir -p "$(dirname "$DEST")"
 rm -rf "$DEST"
 cp -a "$ROOT/gnome-extension@gernalix.github.com" "$DEST"
@@ -23,10 +27,15 @@ echo "Installed GNOME companion (overlay + clipboard bridge + global search shor
 if command -v gnome-extensions >/dev/null; then
   gnome-extensions enable "$UUID" 2>/dev/null || true
   if gnome-extensions list --enabled 2>/dev/null | grep -Fxq "$UUID"; then
+    gnome-extensions disable "$LEGACY_UUID" 2>/dev/null || true
+  else
+    gnome-extensions enable "$LEGACY_UUID" 2>/dev/null || true
+  fi
+  if gnome-extensions list --enabled 2>/dev/null | grep -Fxq "$UUID"; then
     echo "GNOME companion: enabled"
   else
-    echo "GNOME companion: installed but not active yet."
-    echo "On Wayland, log out/in once, then run: gnome-extensions enable $UUID"
+    echo "GNOME companion v2: installed but pending the next GNOME session."
+    echo "The legacy companion was kept enabled; after log out/in, rerun ./install.sh."
   fi
 else
   echo "WARNING: gnome-extensions command not found; enable $UUID after installation."

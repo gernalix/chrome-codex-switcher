@@ -5,6 +5,40 @@ const PROMPT_CAPTURE_TTL_MS = 5 * 60 * 1000;
 let eventLoopRunning = false;
 let eventSeq = 0;
 let promptCaptureBusy = false;
+const lifecyclePorts = new Set();
+
+function isSupportedPageUrl(raw) {
+  try {
+    const url = new URL(raw || "");
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    return url.origin !== "http://127.0.0.1:43817" && url.origin !== "http://localhost:43817";
+  } catch {
+    return false;
+  }
+}
+
+async function recoverEligibleTabs() {
+  const tabs = await chrome.tabs.query({});
+  await Promise.allSettled(tabs
+    .filter(tab => tab.id != null && tab.status === "complete" && isSupportedPageUrl(tab.url || tab.pendingUrl || ""))
+    .map(async tab => {
+      try {
+        const probe = await chrome.tabs.sendMessage(tab.id, {type: "controlProbe"});
+        if (probe?.ok) return;
+      } catch {}
+      await chrome.scripting.executeScript({
+        target: {tabId: tab.id},
+        func: () => {
+          document.getElementById("chrome-codex-switcher-host")?.remove();
+          window.__chromeCodexSwitcherLoaded = false;
+        }
+      });
+      await chrome.scripting.executeScript({
+        target: {tabId: tab.id},
+        files: ["content.js"]
+      });
+    }));
+}
 
 function canonicalUrl(raw) {
   try {
@@ -591,10 +625,14 @@ async function runEventLoop() {
 chrome.runtime.onInstalled.addListener(async () => {
   try { await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick: true}); } catch {}
   chrome.alarms.create("bridge-keepalive", {periodInMinutes: 0.5});
+  await recoverEligibleTabs();
   heartbeat();
-runEventLoop();
+  runEventLoop();
 });
-chrome.runtime.onStartup.addListener(() => runEventLoop());
+chrome.runtime.onStartup.addListener(async () => {
+  await recoverEligibleTabs();
+  runEventLoop();
+});
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name !== "bridge-keepalive") return;
   // Alarms wake an MV3 worker even while a previous long-poll is reconnecting.
@@ -612,6 +650,12 @@ chrome.tabs.onActivated.addListener(async ({tabId}) => {
 chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
   if (!changeInfo.url && changeInfo.status !== "complete") return;
   try { await maybeCapturePromptChromeTab(tab); } catch {}
+});
+
+chrome.runtime.onConnect.addListener(port => {
+  if (port.name !== "content-lifecycle") return;
+  lifecyclePorts.add(port);
+  port.onDisconnect.addListener(() => lifecyclePorts.delete(port));
 });
 
 chrome.commands.onCommand.addListener(async command => {
@@ -696,4 +740,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-runEventLoop();
+async function bootstrap() {
+  await recoverEligibleTabs();
+  await runEventLoop();
+}
+
+bootstrap();

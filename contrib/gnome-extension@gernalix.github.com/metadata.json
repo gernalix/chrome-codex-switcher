@@ -1,11 +1,11 @@
 {
-  "uuid": "chrome-codex-switcher@gernalix.github.com",
+  "uuid": "chrome-codex-switcher-v2@gernalix.github.com",
   "name": "Chrome Codex Switcher Overlay",
   "description": "Shows and edits the current Context Twin note over ChatGPT/Codex Desktop, scoped to the desktop app, with move, resize, collapse and close controls plus optional separate Chrome/Codex notes.",
   "shell-version": [
     "49",
     "50"
   ],
-  "version": 7,
+  "version": 8,
   "settings-schema": "org.gnome.shell.extensions.chrome-codex-switcher"
 }

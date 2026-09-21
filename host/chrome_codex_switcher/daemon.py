@@ -20,6 +20,7 @@ from urllib.request import urlopen
 
 from .a11y_watch import CodexA11yWatch
 from .broker import EventBroker
+from . import __version__
 from .store import Store
 from .util import cache_dir, canonical_url, db_path, now, overlay_path, parse_codex_link, write_json_atomic
 from .verifier import discover_codex_session
@@ -180,7 +181,10 @@ class App:
                 key: gnome.get(key)
                 for key in (
                     "seen_at",
+                    "source_version",
                     "focused_codex",
+                    "focused_app_id",
+                    "focused_wm_class",
                     "visible",
                     "context_id",
                     "codex_thread",
@@ -189,7 +193,7 @@ class App:
             }
         return {
             "ok": True,
-            "version": "0.2.0",
+            "version": __version__,
             "host": HOST,
             "port": PORT,
             "clipboard_watch": bool(self._clipboard_process and self._clipboard_process.poll() is None),
@@ -211,7 +215,10 @@ class App:
     def gnome_heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
         state = {
             "seen_at": now(),
+            "source_version": str(payload.get("source_version") or ""),
             "focused_codex": self._truthy(payload.get("focused_codex")),
+            "focused_app_id": str(payload.get("focused_app_id") or ""),
+            "focused_wm_class": str(payload.get("focused_wm_class") or ""),
             "visible": self._truthy(payload.get("visible")),
             "context_id": str(payload.get("context_id") or "") or None,
             "codex_thread": str(payload.get("codex_thread") or "") or None,

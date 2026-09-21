@@ -1,5 +1,6 @@
 (() => {
   if (window.__chromeCodexSwitcherLoaded) return;
+  document.getElementById("chrome-codex-switcher-host")?.remove();
   window.__chromeCodexSwitcherLoaded = true;
 
   const host = document.createElement("div");
@@ -47,6 +48,18 @@
   let lastUrl = location.href;
   const isWorkflowyPage = location.hostname === "workflowy.com" || location.hostname.endsWith(".workflowy.com");
   let workflowyDashboardObserver = null;
+  let lifecyclePort = null;
+  let pageUnloading = false;
+
+  function destroyStaleOverlay(reloadPage = false) {
+    extensionContextAlive = false;
+    clearTimeout(noteTimer);
+    clearTimeout(uiTimer);
+    workflowyDashboardObserver?.disconnect();
+    workflowyDashboardObserver = null;
+    host.remove();
+    if (reloadPage && !pageUnloading) location.reload();
+  }
 
   function installWorkflowyDashboardStyles() {
     if (!isWorkflowyPage || workflowyDashboardObserver || !document.body) return;
@@ -188,9 +201,16 @@
   }
 
   let extensionContextAlive = true;
+  try {
+    lifecyclePort = chrome.runtime.connect({name: "content-lifecycle"});
+    lifecyclePort.onDisconnect.addListener(() => destroyStaleOverlay(true));
+  } catch (_) {
+    destroyStaleOverlay(true);
+  }
 
   const send = message => new Promise(resolve => {
     if (!extensionContextAlive) {
+      destroyStaleOverlay();
       resolve({ok: false, error: "extension_context_invalidated"});
       return;
     }
@@ -199,7 +219,7 @@
         const lastError = chrome.runtime.lastError;
         if (lastError) {
           const error = String(lastError.message || "runtime_message_failed");
-          if (/extension context invalidated/i.test(error)) extensionContextAlive = false;
+          if (/extension context invalidated/i.test(error)) destroyStaleOverlay(true);
           resolve({ok: false, error});
           return;
         }
@@ -207,7 +227,7 @@
       });
     } catch (error) {
       const messageText = String(error?.message || error);
-      if (/extension context invalidated/i.test(messageText)) extensionContextAlive = false;
+      if (/extension context invalidated/i.test(messageText)) destroyStaleOverlay(true);
       resolve({ok: false, error: messageText});
     }
   });
@@ -458,6 +478,9 @@
   }, 750);
 
   window.addEventListener("pagehide", () => {
+    pageUnloading = true;
+    try { lifecyclePort?.disconnect(); } catch {}
+    lifecyclePort = null;
     clearInterval(urlWatchTimer);
     clearTimeout(noteTimer);
     clearTimeout(uiTimer);
