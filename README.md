@@ -218,8 +218,11 @@ request as `pending_desktop_launch`, arms the next native Codex association, emi
 `desktop_launch_requested`, and opens `codex://threads/new`.
 
 Chrome pairing remains available only through the explicit Chrome/link actions; it is
-not a prerequisite for **Avvia**. The staged desktop-launch record is the contract used
-by the native AT-SPI launcher to select the requested Codex project/model/reasoning,
-fill the composer without sending, and correlate the resulting thread to the explicit
-PROMPT_ID. If an exact requested setting is unavailable, the native launcher must fail
-closed rather than silently select a fallback.
+not a prerequisite for **Avvia**. The staged desktop-launch record is the contract for
+the native AT-SPI launcher tracked by roadmap PROMPT_ID `989559`: that runtime consumer
+must select the requested Codex project/model/reasoning, fill the composer without
+sending, and correlate the resulting thread to the explicit PROMPT_ID. Until that
+consumer is deployed, the daemon still stages the exact request and opens a new Codex
+thread, but it does not claim that UI configuration/injection succeeded. If an exact
+requested setting is unavailable, the native launcher must fail closed rather than
+silently select a fallback.
