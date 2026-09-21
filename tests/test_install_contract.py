@@ -31,6 +31,26 @@ class InstallContractTests(unittest.TestCase):
         self.assertIn('http://127.0.0.1:43817/ui/search', shortcut)
         self.assertNotIn('flatpak', shortcut.lower())
 
+    def test_workflowy_launch_is_codex_desktop_first(self):
+        root = Path(__file__).resolve().parents[1]
+        background = (root / "extension" / "background.js").read_text(encoding="utf-8")
+        content = (root / "extension" / "content.js").read_text(encoding="utf-8")
+
+        start = background.index("async function launchPrompt")
+        end = background.index("\nasync function findContextTab", start)
+        launch = background[start:end]
+        self.assertIn("/api/prompt/launch-codex", launch)
+        self.assertNotIn("focusPrompt(", launch)
+        self.assertNotIn("chrome.tabs.create", launch)
+
+        action = 'else if (action === "launch")'
+        start = content.index(action)
+        end = content.index('else if (action === "bind"', start)
+        launch_click = content[start:end]
+        self.assertIn('type: "prompt:launch"', launch_click)
+        self.assertNotIn("copyPrompt(", launch_click)
+
+
 
 if __name__ == "__main__":
     unittest.main()
