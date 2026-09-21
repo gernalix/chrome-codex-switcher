@@ -621,6 +621,12 @@ chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
 chrome.commands.onCommand.addListener(async command => {
   if (command === "switch-twin") await switchCurrent();
   if (command === "link-twin") await armCurrent();
+  if (command === "open-search-dashboard") {
+    const tab = await currentTab();
+    if (tab?.windowId != null) {
+      try { await chrome.sidePanel.open({windowId: tab.windowId}); } catch {}
+    }
+  }
   if (command === "toggle-note") {
     const tab = await currentTab();
     if (tab?.id) { try { await chrome.tabs.sendMessage(tab.id, {type: "toggleNote"}); } catch {} }
