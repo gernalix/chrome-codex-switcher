@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from chrome_codex_switcher.broker import EventBroker
-from chrome_codex_switcher.daemon import App, prompt_action_fallback_html
+from chrome_codex_switcher.daemon import App, prompt_action_fallback_html, search_dashboard_html
 from chrome_codex_switcher.store import Store
 from chrome_codex_switcher.util import canonical_url, parse_codex_link
 
@@ -104,6 +104,22 @@ class AppTests(unittest.TestCase):
         self.assertEqual("514458", item["prompt_id"])
         self.assertEqual("Fix dashboard UI", item["twin"]["codex_title"])
         self.assertEqual("custom searchable note", item["note"])
+
+    def test_dashboard_focus_emits_exact_chrome_target(self):
+        self.app.upsert_context(self.context)
+        result = self.app.focus_dashboard_context({"context_id": "ctx-1"})
+        self.assertTrue(result["ok"])
+        _seq, events = self.broker.wait_after(0, 0)
+        event = [item for item in events if item["type"] == "focus_chrome"][-1]
+        self.assertEqual("ctx-1", event["payload"]["context_id"])
+        self.assertEqual(self.context["url"], event["payload"]["url"])
+
+    def test_search_dashboard_covers_requested_fields(self):
+        page = search_dashboard_html()
+        for token in ("item.prompt_id", "item.title", "item.twin?.codex_title", "item.note", "item.codex_note"):
+            self.assertIn(token, page)
+        self.assertIn("ArrowDown", page)
+        self.assertIn("Shift", page)
 
     def test_prompt_arm_requires_real_context(self):
         with self.assertRaisesRegex(ValueError, "prompt_context_missing"):
