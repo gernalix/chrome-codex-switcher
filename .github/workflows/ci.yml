@@ -28,7 +28,7 @@ jobs:
       - name: Validate GNOME settings schema
         run: glib-compile-schemas --strict --dry-run contrib/gnome-extension@gernalix.github.com/schemas
       - name: Shell syntax
-        run: bash -n install.sh uninstall.sh contrib/install-gnome-overlay.sh
+        run: bash -n install.sh uninstall.sh contrib/install-gnome-overlay.sh contrib/configure-global-search-shortcut.sh
 
   e2e:
     runs-on: ubuntu-latest

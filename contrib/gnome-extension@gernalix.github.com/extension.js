@@ -1,8 +1,6 @@
 import Clutter from 'gi://Clutter';
-import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
-import Shell from 'gi://Shell';
 import Soup from 'gi://Soup?version=3.0';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -11,8 +9,6 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 const DAEMON_BASE = 'http://127.0.0.1:43817';
 const DAEMON_CLIPBOARD_URL = `${DAEMON_BASE}/api/clipboard`;
 const DAEMON_CODEX_ACTIVITY_URL = `${DAEMON_BASE}/api/codex-activity`;
-const SEARCH_DASHBOARD_URL = `${DAEMON_BASE}/ui/search`;
-const SEARCH_KEYBINDING = 'open-search-dashboard';
 
 function isCodexWindow(win) {
     if (!win) return false;
@@ -40,15 +36,6 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         this._runtimeReportInFlight = false;
         this._runtimeReportFailures = 0;
         this._runtimeReportBackoffUntil = 0;
-
-        this._settings = this.getSettings();
-        Main.wm.addKeybinding(
-            SEARCH_KEYBINDING,
-            this._settings,
-            Meta.KeyBindingFlags.NONE,
-            Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
-            () => this._openSearchDashboard(),
-        );
 
         this._box = new St.BoxLayout({
             vertical: true,
@@ -134,8 +121,6 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
     }
 
     disable() {
-        Main.wm.removeKeybinding(SEARCH_KEYBINDING);
-        this._settings = null;
         if (this._timer) GLib.source_remove(this._timer);
         this._timer = null;
         if (this._saveTimer) GLib.source_remove(this._saveTimer);
@@ -160,22 +145,6 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         this._noteText = null;
         this._mode = null;
         this._modeLabel = null;
-    }
-
-    _openSearchDashboard() {
-        try {
-            for (const desktopId of ['google-chrome.desktop', 'com.google.Chrome.desktop']) {
-                const app = Gio.DesktopAppInfo.new(desktopId);
-                if (app) {
-                    app.launch_uris([SEARCH_DASHBOARD_URL], null);
-                    return;
-                }
-            }
-            Gio.AppInfo.launch_default_for_uri(SEARCH_DASHBOARD_URL, null);
-        } catch (error) {
-            console.error(`Chrome Codex Switcher dashboard launch failed: ${error}`);
-            Main.notify('Context Search', 'Impossibile aprire la dashboard di ricerca.');
-        }
     }
 
     _postForm(path, payload, callback = null) {

@@ -52,6 +52,7 @@ fi
 
 if [[ "${XDG_CURRENT_DESKTOP:-}" == *GNOME* ]] && command -v gnome-extensions >/dev/null; then
   "$PREFIX/contrib/install-gnome-overlay.sh"
+  "$PREFIX/contrib/configure-global-search-shortcut.sh"
 fi
 
 if ! command -v wl-paste >/dev/null; then
