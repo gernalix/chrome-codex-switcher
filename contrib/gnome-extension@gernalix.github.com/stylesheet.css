@@ -6,11 +6,21 @@
   padding:10px;
   box-shadow:0 8px 26px rgba(0,0,0,.35);
   min-width:280px;
-  max-width:440px;
+  min-height:48px;
 }
-.context-twin-title{font-weight:bold}
+.context-twin-header{spacing:6px;padding-bottom:4px}
+.context-twin-title{font-weight:bold;padding:2px 3px}
+.context-twin-control{
+  min-width:26px;
+  min-height:24px;
+  padding:1px 7px;
+  color:#d7d9df;
+  background-color:rgba(80,82,90,.5);
+  border-radius:6px;
+}
+.context-twin-control:hover{background-color:rgba(105,108,118,.8);color:#fff}
 .context-twin-note{
-  margin-top:7px;
+  margin-top:4px;
   min-height:86px;
   padding:7px 9px;
   color:#eee;
@@ -26,3 +36,10 @@
   background-color:transparent;
 }
 .context-twin-mode:hover{color:#fff}
+.context-twin-resize{
+  margin-top:2px;
+  padding:0 2px;
+  color:#9ea1aa;
+  font-size:16px;
+}
+.context-twin-resize:hover{color:#fff}

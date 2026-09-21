@@ -1,6 +1,7 @@
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
 import Soup from 'gi://Soup?version=3.0';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -10,13 +11,28 @@ const DAEMON_BASE = 'http://127.0.0.1:43817';
 const DAEMON_CLIPBOARD_URL = `${DAEMON_BASE}/api/clipboard`;
 const DAEMON_CODEX_ACTIVITY_URL = `${DAEMON_BASE}/api/codex-activity`;
 
-function isCodexWindow(win) {
+function isChatGptDesktopWindow(win) {
     if (!win) return false;
+
+    // Never use the window title as app identity. Titles can legitimately
+    // contain words such as "codex" (for example an Obsidian vault name),
+    // which previously made the Shell overlay leak over unrelated apps.
     const fields = [];
-    for (const method of ['get_wm_class', 'get_wm_class_instance', 'get_title', 'get_gtk_application_id', 'get_sandboxed_app_id']) {
-        try { if (typeof win[method] === 'function') fields.push(win[method]() || ''); } catch (_) {}
+    for (const method of ['get_wm_class', 'get_wm_class_instance', 'get_gtk_application_id', 'get_sandboxed_app_id']) {
+        try {
+            if (typeof win[method] === 'function') fields.push(String(win[method]() || ''));
+        } catch (_) {}
     }
-    return fields.join(' ').toLowerCase().match(/codex|chatgpt/);
+    try {
+        const app = Shell.WindowTracker.get_default().get_window_app(win);
+        if (app) {
+            fields.push(String(app.get_id?.() || ''));
+            fields.push(String(app.get_name?.() || ''));
+        }
+    } catch (_) {}
+
+    const identity = fields.join(' ').toLowerCase();
+    return /(^|[.\s_-])(chatgpt|codex)([.\s_-]|$)/.test(identity);
 }
 
 function isCodexLink(text) {
@@ -29,6 +45,11 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         this._contextId = null;
         this._notesIndependent = false;
         this._noteDirty = false;
+        this._dismissedContextId = null;
+        this._collapsedContextIds = new Set();
+        this._expandedHeights = new Map();
+        this._geometryByContext = new Map();
+        this._interaction = null;
         this._applyingState = false;
         this._saveTimer = null;
         this._lastRuntimeSignature = null;
@@ -41,13 +62,46 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
             vertical: true,
             style_class: 'context-twin-overlay',
             visible: false,
+            reactive: true,
+            track_hover: true,
+            width: 360,
+            height: 260,
         });
-        this._title = new St.Label({style_class: 'context-twin-title'});
+
+        this._header = new St.BoxLayout({
+            style_class: 'context-twin-header',
+            x_expand: true,
+        });
+        this._title = new St.Label({
+            style_class: 'context-twin-title',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+            reactive: true,
+            track_hover: true,
+        });
+        this._collapse = new St.Button({
+            style_class: 'context-twin-control',
+            reactive: true,
+            can_focus: true,
+            child: new St.Label({text: '−'}),
+        });
+        this._close = new St.Button({
+            style_class: 'context-twin-control',
+            reactive: true,
+            can_focus: true,
+            child: new St.Label({text: '×'}),
+        });
+        this._header.add_child(this._title);
+        this._header.add_child(this._collapse);
+        this._header.add_child(this._close);
+
         this._note = new St.Entry({
             style_class: 'context-twin-note',
             can_focus: true,
             track_hover: true,
             hint_text: 'Context note',
+            x_expand: true,
+            y_expand: true,
         });
         this._noteText = this._note.clutter_text;
         this._noteText.set_single_line_mode(false);
@@ -66,9 +120,29 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         this._modeClickedId = this._mode.connect('clicked', () => this._toggleNoteMode());
         this._updateModeLabel();
 
-        this._box.add_child(this._title);
+        this._resize = new St.Label({
+            text: '↘',
+            style_class: 'context-twin-resize',
+            reactive: true,
+            track_hover: true,
+            x_align: Clutter.ActorAlign.END,
+        });
+
+        this._titlePressId = this._title.connect(
+            'button-press-event',
+            (_actor, event) => this._beginOverlayInteraction('move', event),
+        );
+        this._resizePressId = this._resize.connect(
+            'button-press-event',
+            (_actor, event) => this._beginOverlayInteraction('resize', event),
+        );
+        this._collapseClickedId = this._collapse.connect('clicked', () => this._toggleCollapsed());
+        this._closeClickedId = this._close.connect('clicked', () => this._dismissOverlay());
+
+        this._box.add_child(this._header);
         this._box.add_child(this._note);
         this._box.add_child(this._mode);
+        this._box.add_child(this._resize);
         Main.uiGroup.add_child(this._box);
 
         this._http = new Soup.Session();
@@ -87,9 +161,12 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         // overlay immediately rather than showing the previous chat's note.
         this._stageEventId = global.stage.connect('captured-event', (_actor, event) => {
             try {
+                if (this._interaction && this._handleOverlayInteraction(event)) {
+                    return Clutter.EVENT_STOP;
+                }
                 if (event.type() !== Clutter.EventType.BUTTON_PRESS) return Clutter.EVENT_PROPAGATE;
                 const win = global.display.focus_window;
-                if (!isCodexWindow(win)) return Clutter.EVENT_PROPAGATE;
+                if (!isChatGptDesktopWindow(win)) return Clutter.EVENT_PROPAGATE;
                 const [x, y] = event.get_coords();
                 const rect = win.get_frame_rect();
                 const sidebarWidth = Math.min(460, Math.max(250, Math.floor(rect.width * 0.32)));
@@ -133,6 +210,14 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         this._noteChangedId = null;
         if (this._mode && this._modeClickedId) this._mode.disconnect(this._modeClickedId);
         this._modeClickedId = null;
+        if (this._title && this._titlePressId) this._title.disconnect(this._titlePressId);
+        this._titlePressId = null;
+        if (this._resize && this._resizePressId) this._resize.disconnect(this._resizePressId);
+        this._resizePressId = null;
+        if (this._collapse && this._collapseClickedId) this._collapse.disconnect(this._collapseClickedId);
+        this._collapseClickedId = null;
+        if (this._close && this._closeClickedId) this._close.disconnect(this._closeClickedId);
+        this._closeClickedId = null;
         this._selection = null;
         this._clipboard = null;
         this._http = null;
@@ -145,6 +230,14 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         this._noteText = null;
         this._mode = null;
         this._modeLabel = null;
+        this._header = null;
+        this._collapse = null;
+        this._close = null;
+        this._resize = null;
+        this._geometryByContext = null;
+        this._expandedHeights = null;
+        this._collapsedContextIds = null;
+        this._interaction = null;
     }
 
     _postForm(path, payload, callback = null) {
@@ -210,6 +303,163 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         this._modeLabel.text = (this._notesIndependent ? '☑ ' : '☐ ') + 'Separate Chrome/Codex notes';
     }
 
+    _beginOverlayInteraction(mode, event) {
+        if (!this._contextId || !this._box?.visible) return Clutter.EVENT_PROPAGATE;
+        try {
+            if (typeof event.get_button === 'function' && event.get_button() !== 1) {
+                return Clutter.EVENT_PROPAGATE;
+            }
+            const [pointerX, pointerY] = event.get_coords();
+            this._interaction = {
+                mode,
+                pointerX,
+                pointerY,
+                x: this._box.get_x(),
+                y: this._box.get_y(),
+                width: this._box.get_width(),
+                height: this._box.get_height(),
+            };
+            return Clutter.EVENT_STOP;
+        } catch (_) {
+            this._interaction = null;
+            return Clutter.EVENT_PROPAGATE;
+        }
+    }
+
+    _handleOverlayInteraction(event) {
+        if (!this._interaction) return false;
+        const type = event.type();
+        if (type === Clutter.EventType.BUTTON_RELEASE) {
+            this._rememberOverlayGeometry();
+            this._interaction = null;
+            return true;
+        }
+        if (type !== Clutter.EventType.MOTION) return false;
+
+        const win = global.display.focus_window;
+        if (!isChatGptDesktopWindow(win)) {
+            this._interaction = null;
+            return false;
+        }
+
+        const rect = win.get_frame_rect();
+        const margin = 8;
+        const [pointerX, pointerY] = event.get_coords();
+        const dx = pointerX - this._interaction.pointerX;
+        const dy = pointerY - this._interaction.pointerY;
+
+        if (this._interaction.mode === 'move') {
+            const width = this._box.get_width();
+            const height = this._box.get_height();
+            const x = Math.max(
+                rect.x + margin,
+                Math.min(rect.x + rect.width - width - margin, this._interaction.x + dx),
+            );
+            const y = Math.max(
+                rect.y + margin,
+                Math.min(rect.y + rect.height - height - margin, this._interaction.y + dy),
+            );
+            this._box.set_position(Math.round(x), Math.round(y));
+        } else {
+            const maxWidth = Math.max(300, rect.x + rect.width - this._interaction.x - margin);
+            const maxHeight = Math.max(180, rect.y + rect.height - this._interaction.y - margin);
+            const width = Math.max(300, Math.min(maxWidth, this._interaction.width + dx));
+            const height = Math.max(180, Math.min(maxHeight, this._interaction.height + dy));
+            this._box.set_size(Math.round(width), Math.round(height));
+        }
+        return true;
+    }
+
+    _rememberOverlayGeometry() {
+        if (!this._contextId || !this._box) return;
+        const collapsed = this._collapsedContextIds?.has(this._contextId);
+        const previous = this._geometryByContext?.get(this._contextId) || {};
+        const expandedHeight = this._expandedHeights?.get(this._contextId);
+        this._geometryByContext?.set(this._contextId, {
+            x: this._box.get_x(),
+            y: this._box.get_y(),
+            width: this._box.get_width(),
+            height: collapsed
+                ? Number(expandedHeight || previous.height || 260)
+                : this._box.get_height(),
+        });
+    }
+
+    _toggleCollapsed() {
+        if (!this._contextId) return;
+        const collapsed = this._collapsedContextIds.has(this._contextId);
+        if (collapsed) {
+            this._collapsedContextIds.delete(this._contextId);
+            this._note.show();
+            this._mode.show();
+            this._resize.show();
+            const height = Math.max(180, Number(this._expandedHeights.get(this._contextId) || 260));
+            this._box.set_height(height);
+        } else {
+            this._rememberOverlayGeometry();
+            this._expandedHeights.set(this._contextId, Math.max(180, this._box.get_height()));
+            this._collapsedContextIds.add(this._contextId);
+            this._note.hide();
+            this._mode.hide();
+            this._resize.hide();
+            this._box.set_height(48);
+        }
+        this._updateCollapsedControl();
+        this._rememberOverlayGeometry();
+    }
+
+    _updateCollapsedControl() {
+        if (!this._collapse || !this._contextId) return;
+        const collapsed = this._collapsedContextIds.has(this._contextId);
+        const label = this._collapse.get_child();
+        if (label) label.text = collapsed ? '+' : '−';
+    }
+
+    _dismissOverlay() {
+        if (!this._contextId) return;
+        this._dismissedContextId = this._contextId;
+        this._interaction = null;
+        this._box.hide();
+    }
+
+    _placeOverlay(win) {
+        if (!this._contextId || !win || this._interaction) return;
+        const rect = win.get_frame_rect();
+        const margin = 12;
+        const collapsed = this._collapsedContextIds.has(this._contextId);
+        const saved = this._geometryByContext.get(this._contextId) || {};
+
+        let width = Number(saved.width);
+        if (!Number.isFinite(width)) width = Math.min(430, Math.max(320, Math.floor(rect.width * 0.32)));
+        width = Math.max(300, Math.min(width, Math.max(300, rect.width - margin * 2)));
+
+        let height = Number(saved.height);
+        if (!Number.isFinite(height)) height = 260;
+        height = Math.max(180, Math.min(height, Math.max(180, rect.height - 96)));
+
+        let x = Number(saved.x);
+        if (!Number.isFinite(x)) x = rect.x + rect.width - width - 24;
+        x = Math.max(rect.x + margin, Math.min(x, rect.x + rect.width - width - margin));
+
+        const renderedHeight = collapsed ? 48 : height;
+        let y = Number(saved.y);
+        if (!Number.isFinite(y)) y = rect.y + 72;
+        y = Math.max(rect.y + margin, Math.min(y, rect.y + rect.height - renderedHeight - margin));
+
+        this._box.set_size(Math.round(width), Math.round(renderedHeight));
+        this._box.set_position(Math.round(x), Math.round(y));
+        if (collapsed) {
+            this._note.hide();
+            this._mode.hide();
+            this._resize.hide();
+        } else {
+            this._note.show();
+            this._mode.show();
+            this._resize.show();
+        }
+        this._updateCollapsedControl();
+    }
+
     _forwardCodexLink(text) {
         try {
             const url = `${DAEMON_CLIPBOARD_URL}?text=${encodeURIComponent(text)}`;
@@ -243,6 +493,7 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
         if (changedContext) {
             this._contextId = state.context_id || null;
             this._noteDirty = false;
+            this._dismissedContextId = null;
         }
 
         this._title.text = state.title || 'Context Twin';
@@ -293,7 +544,9 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
     _refresh() {
         this._focusRequestedChrome();
         const win = global.display.focus_window;
-        if (!isCodexWindow(win)) {
+        if (!isChatGptDesktopWindow(win)) {
+            this._dismissedContextId = null;
+            this._interaction = null;
             this._box.hide();
             this._reportRuntime(null, false, false);
             return;
@@ -315,13 +568,12 @@ export default class ChromeCodexSwitcherOverlay extends Extension {
                 return;
             }
             this._applyOverlayState(state);
-            const rect = win.get_frame_rect();
-            const width = Math.min(430, Math.max(300, Math.floor(rect.width * 0.32)));
-            this._box.set_width(width);
-            this._box.set_position(
-                Math.max(rect.x + 12, rect.x + rect.width - width - 24),
-                rect.y + 72,
-            );
+            if (this._dismissedContextId === this._contextId) {
+                this._box.hide();
+                this._reportRuntime(state, true, false);
+                return;
+            }
+            this._placeOverlay(win);
             this._box.show();
             this._reportRuntime(state, true, true);
         } catch (_) {
