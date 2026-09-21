@@ -201,16 +201,31 @@ class AppTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.open_codex.assert_called_once_with("codex://threads/thread-prompt")
 
-    def test_launch_prompt_codex_opens_new_thread_after_real_arm(self):
-        self.app.upsert_context(self.context)
-        self.app.bind_prompt({**self.context, "prompt_id": "514458"})
-        self.app.arm_prompt({**self.context, "prompt_id": "514458"})
+    def test_launch_prompt_codex_opens_new_thread_without_chrome_context(self):
+        self.app.prompt_text = Mock(return_value={
+            "ok": True,
+            "prompt_id": "514458",
+            "prompt_text": "PROMPT_ID=514458\nDo the task.",
+            "project_id": "23",
+            "project_name": "chrome-codex-switcher",
+            "repo": "gernalix/chrome-codex-switcher",
+            "model": "gpt-5.6-terra",
+            "reasoning": "medium",
+        })
 
         result = self.app.launch_prompt_codex({"prompt_id": "514458"})
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["mode"], "new")
-        self.assertEqual(result["context_id"], "ctx-1")
+        self.assertNotIn("context_id", result)
+        self.assertEqual(result["launch"]["chat_title"], "514458")
+        self.assertEqual(result["launch"]["project_id"], "23")
+        self.assertEqual(result["launch"]["model"], "gpt-5.6-terra")
+        self.assertEqual(result["launch"]["reasoning"], "medium")
+        pending = self.store.get_meta("pending_desktop_launch")
+        self.assertEqual(pending["prompt_id"], "514458")
+        self.assertEqual(pending["prompt_text"], "PROMPT_ID=514458\nDo the task.")
+        self.assertEqual(self.store.get_meta("pending_prompt_codex")["prompt_id"], "514458")
         self.open_codex.assert_called_once_with("codex://threads/new")
 
     def test_launch_prompt_codex_reuses_existing_thread(self):
@@ -228,14 +243,16 @@ class AppTests(unittest.TestCase):
         self.assertEqual(result["mode"], "existing")
         self.open_codex.assert_called_once_with("codex://threads/thread-prompt")
 
-    def test_launch_prompt_codex_refuses_unarmed_new_thread(self):
-        self.app.upsert_context(self.context)
-        self.app.bind_prompt({**self.context, "prompt_id": "514458"})
+    def test_launch_prompt_codex_refuses_missing_prompt_spec(self):
+        self.app.prompt_text = Mock(return_value={
+            "ok": False,
+            "error": "roadmap_prompt_unavailable",
+        })
 
         result = self.app.launch_prompt_codex({"prompt_id": "514458"})
 
         self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "prompt_not_armed")
+        self.assertEqual(result["error"], "roadmap_prompt_unavailable")
         self.open_codex.assert_not_called()
 
     def test_invalid_prompt_id_is_rejected(self):
