@@ -271,7 +271,14 @@ class App:
         text = str(payload.get("prompt_text") or "")
         if not text:
             return {"ok": False, "error": "prompt_text_missing"}
-        return {"ok": True, "prompt_id": prompt_id, "prompt_text": text}
+        result = {"ok": True, "prompt_id": prompt_id, "prompt_text": text}
+        for key in (
+            "source", "project_id", "project_name", "repo", "chat_guidance",
+            "prompt_type", "model", "reasoning",
+        ):
+            if key in payload:
+                result[key] = payload.get(key)
+        return result
 
     def prompt_binding(self, prompt_id: str) -> dict[str, Any]:
         prompt_id = self._prompt_id(prompt_id)
@@ -417,7 +424,7 @@ class App:
         return {"ok": True, "binding": binding}
 
     def launch_prompt_codex(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Open the prompt's Codex target after Chrome has been prepared."""
+        """Launch a roadmap prompt directly in Codex Desktop, never through Chrome."""
         prompt_id = self._prompt_id(payload.get("prompt_id"))
         binding = self.store.prompt_binding(prompt_id)
 
@@ -425,16 +432,39 @@ class App:
             result = self.open_prompt_codex({"prompt_id": prompt_id})
             return {**result, "mode": "existing"}
 
-        pending = self.store.get_meta("pending_prompt")
-        if not isinstance(pending, dict) or str(pending.get("prompt_id") or "") != prompt_id:
-            return {"ok": False, "error": "prompt_not_armed"}
-        if float(pending.get("expires_at", 0)) < now():
-            self.store.delete_meta("pending_prompt")
-            return {"ok": False, "error": "prompt_arm_expired"}
+        spec = self.prompt_text(prompt_id)
+        if not spec.get("ok"):
+            return {**spec, "ok": False, "error": spec.get("error") or "prompt_spec_unavailable"}
 
-        context_id = str(pending.get("context_id") or "").strip()
-        if not context_id or not self.store.get_context(context_id):
-            return {"ok": False, "error": "prompt_context_missing"}
+        requested_at = now()
+        launch = {
+            "prompt_id": prompt_id,
+            "chat_title": prompt_id,
+            "prompt_text": str(spec.get("prompt_text") or ""),
+            "project_id": spec.get("project_id"),
+            "project_name": spec.get("project_name"),
+            "repo": spec.get("repo"),
+            "model": spec.get("model"),
+            "reasoning": spec.get("reasoning"),
+            "requested_at": requested_at,
+            "expires_at": requested_at + PROMPT_PENDING_TTL,
+        }
+
+        # A launch no longer creates or requires a ChatGPT Chrome context.
+        # Keep an explicit pending Codex association so the first observed
+        # codex:// deep link can bind the new native thread to this PROMPT_ID.
+        self.store.delete_meta("pending_prompt")
+        self.store.set_meta(
+            "pending_prompt_codex",
+            {
+                "prompt_id": prompt_id,
+                "armed_at": requested_at,
+                "expires_at": requested_at + PROMPT_PENDING_TTL,
+                "force": False,
+            },
+        )
+        self.store.set_meta("pending_desktop_launch", launch)
+        self.broker.emit("desktop_launch_requested", launch)
 
         deep_link = "codex://threads/new"
         self._open_codex(deep_link)
@@ -442,8 +472,8 @@ class App:
             "ok": True,
             "mode": "new",
             "prompt_id": prompt_id,
-            "context_id": context_id,
             "deep_link": deep_link,
+            "launch": {key: value for key, value in launch.items() if key != "prompt_text"},
         }
 
     def upsert_context(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -913,17 +943,7 @@ def run_prompt_fallback_action(prompt_id: str, action: str) -> dict[str, Any]:
             {"prompt_id": prompt_id, "force": True}
         )
     if action == "launch":
-        prompt = APP.prompt_text(prompt_id)
-        opened = APP.open_prompt_codex({"prompt_id": prompt_id})
-        return {
-            "ok": bool(prompt.get("ok") and opened.get("ok")),
-            "prompt": prompt,
-            "codex": opened,
-            "note": (
-                "Fallback parziale: per creare/associare una nuova chat Codex "
-                "serve il click intercettato dall'estensione nella dashboard."
-            ),
-        }
+        return APP.launch_prompt_codex({"prompt_id": prompt_id})
     return {
         "ok": False,
         "error": "workflowy_extension_interception_required",
