@@ -8,6 +8,15 @@ rm -rf "$DEST"
 cp -a "$ROOT/gnome-extension@gernalix.github.com" "$DEST"
 if [[ -d "$DEST/schemas" ]]; then
   glib-compile-schemas "$DEST/schemas"
+  SCHEMA_ID="org.gnome.shell.extensions.chrome-codex-switcher"
+  SCHEMA_KEY="open-search-dashboard"
+  if GSETTINGS_SCHEMA_DIR="$DEST/schemas" gsettings writable "$SCHEMA_ID" "$SCHEMA_KEY" >/dev/null 2>&1; then
+    SHORTCUT="$(GSETTINGS_SCHEMA_DIR="$DEST/schemas" gsettings get "$SCHEMA_ID" "$SCHEMA_KEY")"
+    echo "GNOME global search shortcut schema: OK ($SHORTCUT)"
+  else
+    echo "ERROR: GNOME shortcut schema could not be loaded from $DEST/schemas" >&2
+    exit 1
+  fi
 fi
 echo "Installed GNOME companion (overlay + clipboard bridge + global search shortcut) to: $DEST"
 
