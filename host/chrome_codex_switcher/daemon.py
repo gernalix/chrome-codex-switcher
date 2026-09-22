@@ -835,6 +835,7 @@ async function action(item,target){
     const data=await r.json();
     if(!data.ok)throw new Error(data.error||'azione fallita');
     statusEl.textContent=target==='codex'?'Codex aperto':'Comando inviato a Chrome';
+    window.close();
   }catch(e){statusEl.textContent='Errore: '+e.message}
 }
 function render(){
