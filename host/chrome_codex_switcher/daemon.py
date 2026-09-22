@@ -131,13 +131,68 @@ class App:
         title = " ".join(str(value or "").split()).strip()
         return title or None
 
-    def handle_codex_ui_state(self, focused: bool, title: str | None) -> dict[str, Any]:
+    def _record_codex_resolution(
+        self,
+        method: str,
+        *,
+        thread: str | None = None,
+        title: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        self.store.set_meta(
+            "active_codex_resolution",
+            {
+                "method": method,
+                "thread": thread,
+                "title": title,
+                "reason": reason,
+                "updated_at": now(),
+            },
+        )
+
+    def handle_codex_ui_state(
+        self,
+        focused: bool,
+        title: str | None,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        clean = self._clean_codex_title(title)
+        exact_thread = str(thread_id or "").strip() or None
+
         if not focused:
+            self._active_codex_title = None
+            self.store.delete_meta("active_codex_thread")
+            self._record_codex_resolution("unknown", reason="codex_unfocused")
+            self._write_overlay_hidden("codex_unfocused")
             return {"ok": True, "action": "codex_unfocused"}
 
-        clean = self._clean_codex_title(title)
+        # Exact identity from the selected/current AT-SPI node is authoritative.
+        # This path works even when two chats have the same visible title.
+        if exact_thread:
+            self._active_codex_title = clean
+            if clean:
+                self.store.remember_codex_title(exact_thread, clean)
+            self._expected_codex_thread = None
+            self._expected_previous_title = None
+            self._expected_until = 0.0
+            self.store.set_meta("active_codex_thread", exact_thread)
+            self._record_codex_resolution(
+                "a11y_thread", thread=exact_thread, title=clean
+            )
+            self._write_overlay_for_thread(exact_thread, codex_title=clean)
+            return {
+                "ok": True,
+                "action": "active_thread_resolved",
+                "thread": exact_thread,
+                "title": clean,
+                "resolution": "a11y_thread",
+                "linked": bool(self.store.twin_by_thread(exact_thread)),
+            }
+
         if not clean:
             self._active_codex_title = None
+            self.store.delete_meta("active_codex_thread")
+            self._record_codex_resolution("unknown", reason="active_thread_unknown")
             self._write_overlay_hidden("active_thread_unknown")
             return {"ok": True, "action": "overlay_hidden", "reason": "active_thread_unknown"}
 
@@ -157,15 +212,31 @@ class App:
             self._expected_previous_title = None
             self._expected_until = 0.0
             self.store.set_meta("active_codex_thread", thread)
+            self._record_codex_resolution(
+                "title_fallback", thread=thread, title=clean
+            )
             self._write_overlay_for_thread(thread, codex_title=clean)
-            return {"ok": True, "action": "active_thread_resolved", "thread": thread, "title": clean}
+            return {
+                "ok": True,
+                "action": "active_thread_resolved",
+                "thread": thread,
+                "title": clean,
+                "resolution": "title_fallback",
+            }
 
         reason = "active_thread_unmapped" if previous != clean else "active_thread_unresolved"
+        self.store.delete_meta("active_codex_thread")
+        self._record_codex_resolution("unknown", title=clean, reason=reason)
         self._write_overlay_hidden(reason, codex_title=clean)
         return {"ok": True, "action": "overlay_hidden", "reason": reason, "title": clean}
 
     def invalidate_codex_overlay(self, reason: str = "possible_thread_change") -> dict[str, Any]:
         self._active_codex_title = None
+        # Clearing this cache is essential: note edits use it to decide whether
+        # to refresh the desktop overlay. Leaving the old thread here could
+        # resurrect the stale overlay while the new chat is still resolving.
+        self.store.delete_meta("active_codex_thread")
+        self._record_codex_resolution("unknown", reason=reason)
         self._write_overlay_hidden(reason)
         if self._a11y_watch:
             self._a11y_watch.refresh()
@@ -203,7 +274,9 @@ class App:
             "gnome_runtime": gnome_summary,
             "codex_a11y_watch": bool(self._a11y_watch and self._a11y_watch.active),
             "codex_a11y_error": self._a11y_watch.error if self._a11y_watch else None,
+            "active_codex_thread": self.store.get_meta("active_codex_thread"),
             "active_codex_title": self._active_codex_title,
+            "active_codex_resolution": self.store.get_meta("active_codex_resolution"),
         }
 
     @staticmethod
@@ -534,6 +607,7 @@ class App:
             self._last_clipboard_thread = thread
             self._last_clipboard_at = seen_at
         self.store.set_meta("active_codex_thread", thread)
+        self._record_codex_resolution("clipboard", thread=thread, title=ui_title)
 
         paired_prompt = False
         pending_prompt = self.store.get_meta("pending_prompt")

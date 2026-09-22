@@ -120,7 +120,7 @@ The note can be edited from both paired surfaces:
 - optional **Separate Chrome/Codex notes** checkbox: Chrome and Codex keep independent note text for the same pair;
 - persisted per tab-context and searchable from the Chrome side panel.
 
-When Codex changes to a conversation that cannot be resolved unambiguously, the overlay is hidden instead of reusing the previous chat's note.
+When Codex changes conversation, the previous active-thread cache is invalidated immediately. The overlay follows an exact AT-SPI thread ID when available; if only a title is available it is accepted only when it maps to one unique learned thread. Otherwise the overlay stays hidden instead of reusing the previous chat's note.
 
 Use **Alt+Shift+V** to show/hide the note in the active Chrome tab.
 
@@ -183,7 +183,7 @@ The HTTP server binds only to `127.0.0.1:43817`. Mutating browser requests are a
 
 `contrib/gnome-extension@gernalix.github.com/` supports GNOME Shell 49/50. It has two jobs:
 
-- use AT-SPI to resolve the selected Codex/ChatGPT conversation and display only the matching paired note;
+- use AT-SPI to resolve the exact selected Codex/ChatGPT thread ID when the UI exposes a thread route/attribute, with a fail-closed unique-title fallback for older builds, and display only the matching paired note;
 - provide an editable Codex note plus the **Separate Chrome/Codex notes** toggle;
 - bridge copied Codex deep links to the daemon using GNOME Shell's native clipboard APIs.
 

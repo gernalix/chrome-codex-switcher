@@ -440,6 +440,54 @@ class AppTests(unittest.TestCase):
         self.assertFalse(state["visible"])
         self.assertEqual(state["reason"], "active_thread_unmapped")
 
+    def test_exact_a11y_thread_wins_when_visible_titles_are_ambiguous(self):
+        other = {"context_id": "ctx-2", "url": "https://chatgpt.com/c/def", "title": "Chat B"}
+        self.app.arm_link(self.context)
+        self.app.handle_clipboard("codex://threads/thread-1", codex_title="Same visible title")
+        self.app._last_clipboard_at = 0
+        self.app.arm_link(other)
+        self.app.handle_clipboard("codex://threads/thread-2", codex_title="Same visible title")
+
+        self.assertIsNone(self.store.thread_by_codex_title("Same visible title"))
+        resolved = self.app.handle_codex_ui_state(
+            True, "Same visible title", "thread-2"
+        )
+
+        self.assertEqual("active_thread_resolved", resolved["action"])
+        self.assertEqual("a11y_thread", resolved["resolution"])
+        self.assertEqual("thread-2", resolved["thread"])
+        state = json.loads(self.overlay_path.read_text(encoding="utf-8"))
+        self.assertTrue(state["visible"])
+        self.assertEqual("thread-2", state["codex_thread"])
+        self.assertEqual("ctx-2", state["context_id"])
+
+    def test_thread_change_invalidation_clears_cache_and_cannot_resurrect_old_overlay(self):
+        self.app.arm_link(self.context)
+        self.app.handle_clipboard("codex://threads/thread-1", codex_title="Chat A")
+        self.assertEqual("thread-1", self.store.get_meta("active_codex_thread"))
+
+        self.app.invalidate_codex_overlay("sidebar_pointer")
+        self.assertIsNone(self.store.get_meta("active_codex_thread"))
+        hidden = json.loads(self.overlay_path.read_text(encoding="utf-8"))
+        self.assertFalse(hidden["visible"])
+
+        self.app.set_note({"context_id": "ctx-1", "note": "edited while resolving"})
+        still_hidden = json.loads(self.overlay_path.read_text(encoding="utf-8"))
+        self.assertFalse(still_hidden["visible"])
+        self.assertEqual("sidebar_pointer", still_hidden["reason"])
+
+    def test_unfocused_codex_clears_active_thread_and_hides_overlay(self):
+        self.app.arm_link(self.context)
+        self.app.handle_clipboard("codex://threads/thread-1", codex_title="Chat A")
+
+        result = self.app.handle_codex_ui_state(False, None)
+
+        self.assertEqual("codex_unfocused", result["action"])
+        self.assertIsNone(self.store.get_meta("active_codex_thread"))
+        state = json.loads(self.overlay_path.read_text(encoding="utf-8"))
+        self.assertFalse(state["visible"])
+        self.assertEqual("codex_unfocused", state["reason"])
+
     def test_bind_prompt_repairs_existing_thread_only_binding(self):
         self.store.bind_prompt(
             "514458",
