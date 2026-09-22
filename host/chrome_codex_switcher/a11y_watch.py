@@ -174,7 +174,7 @@ class CodexA11yWatch:
                 self.error = None
             except Exception as exc:
                 self.error = f"{type(exc).__name__}:{exc}"
-                state = (False, None)
+                state = (False, None, None)
 
             if state == pending:
                 samples += 1
@@ -212,9 +212,9 @@ class CodexA11yWatch:
             if not _APP_RE.search(app_name):
                 continue
 
-            focused, title = self._probe_app(app)
+            focused, thread_id, title = self._probe_app(app)
             if focused:
-                return True, title
+                return True, thread_id, title
 
         return False, None, None
 
