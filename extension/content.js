@@ -45,6 +45,8 @@
   let pendingUi = {};
   let pendingGeometry = null;
   let pendingContextId = null;
+  let refreshRetryTimer = null;
+  let refreshAttempts = 0;
   let lastUrl = location.href;
   const isWorkflowyPage = location.hostname === "workflowy.com" || location.hostname.endsWith(".workflowy.com");
   let workflowyDashboardObserver = null;
@@ -55,6 +57,7 @@
     extensionContextAlive = false;
     clearTimeout(noteTimer);
     clearTimeout(uiTimer);
+    clearTimeout(refreshRetryTimer);
     workflowyDashboardObserver?.disconnect();
     workflowyDashboardObserver = null;
     host.remove();
@@ -280,9 +283,27 @@
     if (Number.isFinite(g.height)) host.style.height = `${Math.max(105, g.height)}px`;
   }
 
+  const REFRESH_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 3000, 5000, 5000];
+
+  function scheduleRefreshRetry() {
+    if (refreshRetryTimer || pageUnloading || refreshAttempts >= REFRESH_RETRY_DELAYS_MS.length) return;
+    const delay = REFRESH_RETRY_DELAYS_MS[refreshAttempts++];
+    refreshRetryTimer = setTimeout(() => {
+      refreshRetryTimer = null;
+      refresh().catch(() => {});
+    }, delay);
+  }
+
   async function refresh() {
     const result = await send({type: "context:get"});
-    if (result?.ok) applyContext(result.context);
+    if (result?.ok && result.context?.id) {
+      refreshAttempts = 0;
+      applyContext(result.context);
+      return true;
+    }
+    status.textContent = "daemon offline";
+    scheduleRefreshRetry();
+    return false;
   }
 
   note.addEventListener("input", () => {
@@ -484,12 +505,18 @@
     clearInterval(urlWatchTimer);
     clearTimeout(noteTimer);
     clearTimeout(uiTimer);
+    clearTimeout(refreshRetryTimer);
     workflowyDashboardObserver?.disconnect();
     workflowyDashboardObserver = null;
   }, {once: true});
 
-  refresh().catch(() => {
+  refresh().then(ok => {
+    if (ok) return;
     status.textContent = "daemon offline";
+    flash("Start chrome-codex-switcher.service", 3500);
+  }).catch(() => {
+    status.textContent = "daemon offline";
+    scheduleRefreshRetry();
     flash("Start chrome-codex-switcher.service", 3500);
   });
 })();

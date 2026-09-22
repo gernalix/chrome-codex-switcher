@@ -301,6 +301,33 @@ class AppTests(unittest.TestCase):
         self.assertTrue(reopened["collapsed"])
         self.assertIsNone(self.store.get_context("ctx-new-tab"))
 
+    def test_note_survives_store_reopen(self):
+        path = self.store.path
+        self.app.upsert_context({"context_id": "ctx-reopen", "url": "https://chatgpt.com/c/reopen"})
+        self.app.set_note({"context_id": "ctx-reopen", "note": "durable note"})
+
+        reopened = Store(path)
+
+        context = reopened.get_context("ctx-reopen")
+        self.assertEqual("durable note", context["note"])
+        self.assertEqual("durable note", context["codex_note"])
+
+    def test_three_distinct_reopened_contexts_keep_their_notes(self):
+        rows = [
+            ("ctx-a", "https://chatgpt.com/c/three-a", "note A"),
+            ("ctx-b", "https://chatgpt.com/c/three-b", "note B"),
+            ("ctx-c", "https://chatgpt.com/c/three-c", "note C"),
+        ]
+        for context_id, url, note in rows:
+            self.app.upsert_context({"context_id": context_id, "url": url})
+            self.app.set_note({"context_id": context_id, "note": note})
+
+        reopened = Store(self.store.path)
+        for index, (_context_id, url, note) in enumerate(rows):
+            restored = reopened.upsert_context(f"new-tab-{index}", url)
+            self.assertEqual(note, restored["note"])
+            self.assertNotEqual(f"new-tab-{index}", restored["id"])
+
     def test_url_recovery_prefers_saved_geometry_over_newer_empty_legacy_context(self):
         url = "https://chatgpt.com/c/legacy-note"
         with self.store._connect() as db:
