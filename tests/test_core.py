@@ -120,6 +120,7 @@ class AppTests(unittest.TestCase):
             self.assertIn(token, page)
         self.assertIn("ArrowDown", page)
         self.assertIn("shiftKey", page)
+        self.assertIn("window.close();", page)
 
     def test_prompt_arm_requires_real_context(self):
         with self.assertRaisesRegex(ValueError, "prompt_context_missing"):
