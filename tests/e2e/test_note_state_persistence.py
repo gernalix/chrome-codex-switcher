@@ -57,14 +57,8 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         env["CCS_PORT"] = str(DAEMON_PORT)
         env["CCS_DISABLE_CLIPBOARD_WATCH"] = "1"
         env["XDG_CACHE_HOME"] = str(cls.tmp_path / "cache")
-        cls.daemon = subprocess.Popen(
-            [sys.executable, "-m", "chrome_codex_switcher.daemon"],
-            cwd=ROOT,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        cls.daemon_env = env
+        cls.daemon = cls._start_daemon()
         cls._wait_daemon()
 
         options = Options()
@@ -98,15 +92,30 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         cls.wait = WebDriverWait(cls.driver, 15)
 
     @classmethod
+    def _start_daemon(cls) -> subprocess.Popen:
+        return subprocess.Popen(
+            [sys.executable, "-m", "chrome_codex_switcher.daemon"],
+            cwd=ROOT,
+            env=cls.daemon_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+    @classmethod
+    def _stop_daemon(cls) -> None:
+        cls.daemon.terminate()
+        try:
+            cls.daemon.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.daemon.kill()
+
+    @classmethod
     def tearDownClass(cls) -> None:
         if hasattr(cls, "driver"):
             cls.driver.quit()
         if hasattr(cls, "daemon"):
-            cls.daemon.terminate()
-            try:
-                cls.daemon.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                cls.daemon.kill()
+            cls._stop_daemon()
         if hasattr(cls, "page_server"):
             cls.page_server.shutdown()
             cls.page_server.server_close()
@@ -387,6 +396,59 @@ class NoteStatePersistenceE2E(unittest.TestCase):
             """
         )
         self.assertEqual({"count": 1, "note": True}, probe)
+
+    def test_delayed_daemon_start_rehydrates_open_tab_without_page_refresh(self) -> None:
+        path = "delayed-start-case"
+        canonical = self._canonical_url(path)
+        self.driver.get(self._url(path, "seed"))
+        self._wait_extension()
+        context = self._context_for_url(canonical)
+        self._post("/api/note", {"context_id": context["id"], "note": "delayed startup note", "surface": "chrome"})
+        self._stop_daemon()
+
+        self.driver.refresh()
+        self._wait_extension()
+        self.assertEqual("", self._snapshot()["note"])
+
+        type(self).daemon = type(self)._start_daemon()
+        type(self)._wait_daemon()
+        WebDriverWait(self.driver, 15).until(lambda driver: self._snapshot()["note"] == "delayed startup note")
+
+    def test_daemon_restart_reconnects_without_overwriting_focused_edit(self) -> None:
+        path = "daemon-restart-case"
+        canonical = self._canonical_url(path)
+        self.driver.get(self._url(path, "before-restart"))
+        self._wait_extension()
+        context = self._context_for_url(canonical)
+        self.driver.execute_script(
+            """
+            const note = document.querySelector('#chrome-codex-switcher-host').shadowRoot.querySelector('.note');
+            note.focus(); note.value = 'local focused edit';
+            """
+        )
+        self._stop_daemon()
+        with sqlite3.connect(self.db_path) as db:
+            db.execute("UPDATE contexts SET note=?, codex_note=? WHERE id=?", ("server after restart", "server after restart", context["id"]))
+        type(self).daemon = type(self)._start_daemon()
+        type(self)._wait_daemon()
+
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            try:
+                with urlopen(f"http://127.0.0.1:{DAEMON_PORT}/api/health", timeout=1) as response:
+                    if response.status == 200:
+                        break
+            except Exception:
+                pass
+            time.sleep(0.1)
+        else:
+            self.fail("daemon did not recover after restart")
+        time.sleep(3)
+        focused = self.driver.execute_script(
+            "return document.querySelector('#chrome-codex-switcher-host').shadowRoot.activeElement?.className === 'note'"
+        )
+        self.assertTrue(focused)
+        self.assertEqual("local focused edit", self._snapshot()["note"])
 
     def test_split_merge_notes_uses_current_value_and_persists_both_surfaces(self) -> None:
         path = "note-mode-case"

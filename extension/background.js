@@ -5,6 +5,7 @@ const PROMPT_CAPTURE_TTL_MS = 5 * 60 * 1000;
 let eventLoopRunning = false;
 let eventSeq = 0;
 let promptCaptureBusy = false;
+let bridgeWasOnline = false;
 const lifecyclePorts = new Set();
 
 function isSupportedPageUrl(raw) {
@@ -17,14 +18,20 @@ function isSupportedPageUrl(raw) {
   }
 }
 
-async function recoverEligibleTabs() {
+async function recoverEligibleTabs({refreshExisting = false} = {}) {
   const tabs = await chrome.tabs.query({});
   await Promise.allSettled(tabs
     .filter(tab => tab.id != null && tab.status === "complete" && isSupportedPageUrl(tab.url || tab.pendingUrl || ""))
     .map(async tab => {
       try {
         const probe = await chrome.tabs.sendMessage(tab.id, {type: "controlProbe"});
-        if (probe?.ok) return;
+        // A live content script can answer before it has rehydrated a context:
+        // this happens when Chrome is restored before the local bridge starts.
+        // Treat that as stale, not as a healthy overlay.
+        if (probe?.ok && probe.context_id) {
+          if (refreshExisting) await chrome.tabs.sendMessage(tab.id, {type: "refreshContext"});
+          return;
+        }
       } catch {}
       await chrome.scripting.executeScript({
         target: {tabId: tab.id},
@@ -609,11 +616,14 @@ async function runEventLoop() {
         // A daemon restart preserves this worker but loses its in-memory
         // runtime observation. Renew the heartbeat once the bridge reconnects.
         await heartbeat();
+        if (!bridgeWasOnline) await recoverEligibleTabs({refreshExisting: true});
+        bridgeWasOnline = true;
         for (const event of data.events || []) await processEvent(event);
         // The daemon sequence is process-local and can reset after service restart.
         eventSeq = Number(data.seq || 0);
         await chrome.storage.local.set({eventSeq});
       } catch {
+        bridgeWasOnline = false;
         await new Promise(resolve => setTimeout(resolve, 1500));
       }
     }
