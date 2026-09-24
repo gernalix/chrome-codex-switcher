@@ -1,6 +1,6 @@
 [project]
 name = "chrome-codex-switcher"
-version = "0.3.8"
+version = "0.4.0"
 description = "Pair Chrome tabs with Codex Desktop threads on Fedora/Wayland"
 requires-python = ">=3.11"
 dependencies = []
