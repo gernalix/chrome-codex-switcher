@@ -74,6 +74,8 @@
           --ct-roadmap-warning: #b54708;
           --ct-roadmap-info: #175cd3;
           --ct-roadmap-integration: #6938ef;
+          --ct-roadmap-model: #7f56d9;
+          --ct-roadmap-goal: #0891b2;
           --ct-roadmap-success: #067647;
           --ct-roadmap-muted: #667085;
           --ct-roadmap-action: #1849a9;
@@ -84,6 +86,8 @@
             --ct-roadmap-warning: #fdb022;
             --ct-roadmap-info: #84adff;
             --ct-roadmap-integration: #b692f6;
+            --ct-roadmap-model: #c3b5fd;
+            --ct-roadmap-goal: #67e8f9;
             --ct-roadmap-success: #75e0a7;
             --ct-roadmap-muted: #98a2b3;
             --ct-roadmap-action: #84adff;
@@ -93,6 +97,8 @@
         .ct-roadmap-warning { color: var(--ct-roadmap-warning) !important; font-weight: 700 !important; }
         .ct-roadmap-info { color: var(--ct-roadmap-info) !important; font-weight: 650 !important; }
         .ct-roadmap-integration { color: var(--ct-roadmap-integration) !important; font-weight: 650 !important; }
+        .ct-roadmap-model { color: var(--ct-roadmap-model) !important; font-weight: 800 !important; text-decoration: underline !important; }
+        .ct-roadmap-goal { color: var(--ct-roadmap-goal) !important; font-weight: 850 !important; }
         .ct-roadmap-success { color: var(--ct-roadmap-success) !important; font-weight: 650 !important; }
         .ct-roadmap-muted { color: var(--ct-roadmap-muted) !important; }
         .ct-roadmap-next { font-weight: 750 !important; }
@@ -119,6 +125,8 @@
       "ct-roadmap-warning",
       "ct-roadmap-info",
       "ct-roadmap-integration",
+      "ct-roadmap-model",
+      "ct-roadmap-goal",
       "ct-roadmap-success",
       "ct-roadmap-muted",
       "ct-roadmap-next"
@@ -145,13 +153,23 @@
         return "ct-roadmap-integration";
       }
       if (
+        /^🧠\s/.test(text)
+        || /^Modello$/i.test(text)
+        || /^GPT-(?:5\.6|6)\b/i.test(text)
+      ) return "ct-roadmap-model";
+      if (
+        /^⚡\s/.test(text)
+        || /^\/goal$/i.test(text)
+        || /^esecuzione persistente$/i.test(text)
+      ) return "ct-roadmap-goal";
+      if (
         /^\[\d{6}\]\s+(?:🟢|✅)/.test(text)
         || /^(?:🟢|✅)\s/.test(text)
         || /^(?:Ready|Done) \(\d+\)$/.test(text)
       ) return "ct-roadmap-success";
       if (/^👉\s/.test(text)) return "ct-roadmap-next";
       if (
-        /^(?:PROMPT_ID|Stato canonico|Progetto|Modello|Spiegazione|Pipeline|PR|Coda integrazione|Sorgente audit):/.test(text)
+        /^(?:PROMPT_ID|Stato canonico|Progetto|Spiegazione|Pipeline|PR|Coda integrazione|Sorgente audit):/.test(text)
         || /^Override manuale/.test(text)
       ) return "ct-roadmap-muted";
       return null;
