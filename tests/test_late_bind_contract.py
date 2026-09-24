@@ -29,6 +29,9 @@ class LateBindContractTests(unittest.TestCase):
         self.assertIn("MutationObserver", content)
         self.assertIn("ct-roadmap-danger", content)
         self.assertIn("ct-roadmap-warning", content)
+        self.assertIn("ct-roadmap-model", content)
+        self.assertIn("ct-roadmap-goal", content)
+        self.assertIn("text-decoration: underline", content)
         self.assertIn('href$="/bind-codex"', content)
 
     def test_capture_is_limited_to_existing_chatgpt_conversations(self):
@@ -41,7 +44,7 @@ class LateBindContractTests(unittest.TestCase):
         manifest = json.loads((ROOT / "extension" / "manifest.json").read_text(encoding="utf-8"))
         self.assertIn("tabs", manifest["permissions"])
         self.assertIn("storage", manifest["permissions"])
-        self.assertEqual("0.3.8", manifest["version"])
+        self.assertEqual("0.3.9", manifest["version"])
         self.assertIn("open-search-dashboard", manifest["commands"])
 
 
