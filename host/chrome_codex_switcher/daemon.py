@@ -365,6 +365,33 @@ class App:
         binding = self.store.prompt_binding(prompt_id)
         return {"ok": bool(binding), "binding": binding}
 
+    def observe_context_prompt_ids(self, payload: dict[str, Any]) -> dict[str, Any]:
+        context_id = str(payload.get("context_id") or "").strip()
+        raw_ids = payload.get("prompt_ids", [])
+        if not context_id:
+            raise ValueError("context_id_missing")
+        if not isinstance(raw_ids, list):
+            raise ValueError("prompt_ids_list_required")
+        prompt_ids = [self._prompt_id(value) for value in raw_ids]
+        items = self.store.observe_context_prompt_ids(context_id, prompt_ids)
+        return {"ok": True, "context_id": context_id, "prompt_ids": [item["prompt_id"] for item in items], "items": items}
+
+    def add_context_prompt_id(self, payload: dict[str, Any]) -> dict[str, Any]:
+        context_id = str(payload.get("context_id") or "").strip()
+        if not context_id:
+            raise ValueError("context_id_missing")
+        prompt_id = self._prompt_id(payload.get("prompt_id"))
+        items = self.store.add_context_prompt_id(context_id, prompt_id)
+        return {"ok": True, "context_id": context_id, "prompt_ids": [item["prompt_id"] for item in items], "items": items}
+
+    def remove_context_prompt_id(self, payload: dict[str, Any]) -> dict[str, Any]:
+        context_id = str(payload.get("context_id") or "").strip()
+        if not context_id:
+            raise ValueError("context_id_missing")
+        prompt_id = self._prompt_id(payload.get("prompt_id"))
+        items = self.store.remove_context_prompt_id(context_id, prompt_id)
+        return {"ok": True, "context_id": context_id, "prompt_ids": [item["prompt_id"] for item in items], "items": items}
+
     def bind_prompt(self, payload: dict[str, Any]) -> dict[str, Any]:
         prompt_id = self._prompt_id(payload.get("prompt_id"))
         context_id = str(payload.get("context_id") or "").strip() or None
@@ -854,103 +881,31 @@ class App:
 
 def search_dashboard_html() -> str:
     return r"""<!doctype html>
-<html lang="it">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Context Search</title>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Context Search</title>
 <style>
-:root{color-scheme:light dark;font-family:system-ui,sans-serif}
-*{box-sizing:border-box}
-body{margin:0;background:Canvas;color:CanvasText}
-header{position:sticky;top:0;background:Canvas;padding:18px 18px 12px;border-bottom:1px solid #7775;z-index:2}
-h1{font-size:1.1rem;margin:0 0 10px}
-#q{width:100%;font:inherit;padding:11px 13px;border:1px solid #7778;border-radius:10px;background:Canvas;color:CanvasText}
-#status{font-size:.82rem;opacity:.65;margin-top:7px;min-height:1.1em}
-main{padding:10px}
-.card{border:1px solid #7775;border-radius:12px;padding:11px 12px;margin:8px 0;cursor:pointer}
-.card.selected{outline:2px solid Highlight;outline-offset:1px}
-.title{font-weight:700;overflow-wrap:anywhere}
-.note{margin-top:5px;opacity:.82;white-space:pre-wrap;overflow-wrap:anywhere}
-.meta{font-size:.82rem;opacity:.68;margin-top:6px;overflow-wrap:anywhere}
-.buttons{display:flex;gap:7px;margin-top:9px}
-button{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid #7777;background:ButtonFace;color:ButtonText;cursor:pointer}
-.empty{padding:32px 12px;text-align:center;opacity:.65}
-</style>
-</head>
-<body>
-<header>
-<h1>Context Search</h1>
-<input id="q" type="search" autocomplete="off" placeholder="Cerca PROMPT_ID, titoli Chrome/Codex, note…">
-<div id="status">Caricamento…</div>
-</header>
-<main id="list" role="listbox" aria-label="Chrome and Codex contexts"></main>
-<script>
-const q=document.querySelector('#q'),list=document.querySelector('#list'),statusEl=document.querySelector('#status');
-let contexts=[],visible=[],selected=0;
-const searchable=item=>[
-  item.prompt_id,item.title,item.twin?.codex_title,item.note,item.codex_note
-].filter(Boolean).join(' ').toLowerCase();
-const noteText=item=>[...new Set([item.note,item.codex_note].filter(Boolean))].join(' · ');
-function select(index){
-  if(!visible.length){selected=0;return}
-  selected=(index+visible.length)%visible.length;
-  [...list.querySelectorAll('.card')].forEach((el,i)=>{
-    const on=i===selected; el.classList.toggle('selected',on); el.setAttribute('aria-selected',on?'true':'false');
-    if(on)el.scrollIntoView({block:'nearest'});
-  });
-}
-async function action(item,target){
-  if(!item)return;
-  const path=target==='codex'?'/api/dashboard/open-codex':'/api/dashboard/focus-chrome';
-  statusEl.textContent=target==='codex'?'Apro Codex…':'Passo alla scheda Chrome…';
-  try{
-    const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({context_id:item.id})});
-    const data=await r.json();
-    if(!data.ok)throw new Error(data.error||'azione fallita');
-    statusEl.textContent=target==='codex'?'Codex aperto':'Comando inviato a Chrome';
-    window.close();
-  }catch(e){statusEl.textContent='Errore: '+e.message}
-}
-function render(){
-  const needle=q.value.trim().toLowerCase();
-  visible=contexts.filter(item=>!needle||searchable(item).includes(needle));
-  list.textContent='';
-  if(!visible.length){selected=0;const e=document.createElement('div');e.className='empty';e.textContent='Nessun risultato';list.append(e);return}
-  selected=Math.min(selected,visible.length-1);
-  visible.forEach((item,index)=>{
-    const card=document.createElement('section');card.className='card'+(index===selected?' selected':'');card.role='option';
-    card.setAttribute('aria-selected',index===selected?'true':'false');card.onclick=()=>action(item,'chrome');card.onmouseenter=()=>select(index);
-    const title=document.createElement('div');title.className='title';title.textContent=item.title||item.url||'Contesto Chrome senza titolo';
-    const note=document.createElement('div');note.className='note';note.textContent=noteText(item);
-    const meta=document.createElement('div');meta.className='meta';
-    const bits=[];if(item.prompt_id)bits.push('PROMPT_ID '+item.prompt_id);
-    if(item.twin?.codex_title)bits.push('Codex: '+item.twin.codex_title);else if(item.twin?.codex_thread)bits.push('Codex thread: '+item.twin.codex_thread);else bits.push('Nessun Codex twin');
-    meta.textContent=bits.join(' · ');
-    const buttons=document.createElement('div');buttons.className='buttons';
-    const chromeBtn=document.createElement('button');chromeBtn.textContent='Chrome';chromeBtn.onclick=e=>{e.stopPropagation();action(item,'chrome')};buttons.append(chromeBtn);
-    if(item.twin){const codexBtn=document.createElement('button');codexBtn.textContent='Codex';codexBtn.onclick=e=>{e.stopPropagation();action(item,'codex')};buttons.append(codexBtn)}
-    card.append(title,note,meta,buttons);list.append(card);
-  });
-}
-async function load(){
-  try{
-    const r=await fetch('/api/list',{cache:'no-store'}),data=await r.json();
-    contexts=data.contexts||[];statusEl.textContent=contexts.length+' contesti';render();
-  }catch(e){statusEl.textContent='Daemon non raggiungibile: '+e.message}
-}
-q.addEventListener('input',()=>{selected=0;render()});
-q.addEventListener('keydown',e=>{
-  if(e.key==='ArrowDown'){e.preventDefault();select(selected+1)}
-  else if(e.key==='ArrowUp'){e.preventDefault();select(selected-1)}
-  else if(e.key==='Enter'){e.preventDefault();action(visible[selected]||visible[0],e.shiftKey?'codex':'chrome')}
-  else if(e.key==='Escape'&&q.value){e.preventDefault();q.value='';selected=0;render()}
-});
-q.focus();load();setInterval(load,5000);
-</script>
-</body>
-</html>"""
-
+:root{color-scheme:light dark;font-family:system-ui,sans-serif}*{box-sizing:border-box}body{margin:0;background:Canvas;color:CanvasText}
+header{position:sticky;top:0;background:Canvas;padding:18px 18px 12px;border-bottom:1px solid #7775;z-index:2}h1{font-size:1.1rem;margin:0 0 10px}
+#q{width:100%;font:inherit;padding:11px 13px;border:1px solid #7778;border-radius:10px;background:Canvas;color:CanvasText}#status{font-size:.82rem;opacity:.65;margin-top:7px;min-height:1.1em}main{padding:10px}
+.card{border:1px solid #7775;border-radius:12px;padding:12px;margin:8px 0;cursor:pointer}.card.selected{outline:2px solid Highlight;outline-offset:1px}
+.note{font-size:1.03rem;font-weight:650;line-height:1.5;color:CanvasText;background:#7772;border:1px solid #7775;border-radius:10px;padding:12px 13px;margin:0 0 10px;white-space:pre-wrap;overflow-wrap:anywhere}
+.title{font-size:.9rem;font-weight:650;opacity:.72;overflow-wrap:anywhere}.prompt-ids{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-top:8px}
+.prompt-chip{display:inline-flex;align-items:center;gap:4px;font:600 .78rem/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid #7776;background:#7772;border-radius:999px;padding:4px 7px}.prompt-chip.bound{font-weight:750}
+.prompt-remove,.prompt-add{padding:1px 5px;min-width:0;border-radius:999px}.prompt-remove{border:0;background:transparent}.meta{font-size:.76rem;opacity:.58;margin-top:8px;overflow-wrap:anywhere}.buttons{display:flex;gap:7px;margin-top:10px}
+button{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid #7777;background:ButtonFace;color:ButtonText;cursor:pointer}.empty{padding:32px 12px;text-align:center;opacity:.65}
+</style></head><body><header><h1>Context Search</h1><input id="q" type="search" autocomplete="off" placeholder="Cerca note, PROMPT_ID, titoli Chrome/Codex…"><div id="status">Caricamento…</div></header>
+<main id="list" role="listbox" aria-label="Chrome and Codex contexts"></main><script>
+const q=document.querySelector('#q'),list=document.querySelector('#list'),statusEl=document.querySelector('#status');let contexts=[],visible=[],selected=0;
+const searchable=item=>[item.prompt_id,...(item.prompt_ids||[]),item.title,item.twin?.codex_title,item.note,item.codex_note].filter(Boolean).join(' ').toLowerCase();
+const noteText=item=>[...new Set([item.note,item.codex_note].filter(Boolean))].join('\n\n');
+function select(index){if(!visible.length){selected=0;return}selected=(index+visible.length)%visible.length;[...list.querySelectorAll('.card')].forEach((el,i)=>{const on=i===selected;el.classList.toggle('selected',on);el.setAttribute('aria-selected',on?'true':'false');if(on)el.scrollIntoView({block:'nearest'})})}
+async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),data=await r.json();if(!data.ok)throw new Error(data.error||'azione fallita');return data}
+async function action(item,target){if(!item)return;const path=target==='codex'?'/api/dashboard/open-codex':'/api/dashboard/focus-chrome';statusEl.textContent=target==='codex'?'Apro Codex…':'Passo alla scheda Chrome…';try{await post(path,{context_id:item.id});statusEl.textContent=target==='codex'?'Codex aperto':'Comando inviato a Chrome';window.close()}catch(e){statusEl.textContent='Errore: '+e.message}}
+async function editPrompt(item,mode,promptId=null){let value=promptId;if(mode==='add'){value=(window.prompt('PROMPT_ID da associare (6 cifre)')||'').trim();if(!value)return;if(!/^\d{6}$/.test(value)){statusEl.textContent='PROMPT_ID non valido: servono esattamente 6 cifre';return}}try{await post('/api/context/prompts/'+mode,{context_id:item.id,prompt_id:value});statusEl.textContent=mode==='add'?'PROMPT_ID aggiunto':'PROMPT_ID rimosso';await load()}catch(e){statusEl.textContent='Errore: '+e.message}}
+function promptRow(item){const row=document.createElement('div');row.className='prompt-ids';const canonical=String(item.prompt_id||'');if(canonical){const chip=document.createElement('span');chip.className='prompt-chip bound';chip.title='Binding canonico';chip.textContent=canonical;row.append(chip)}for(const entry of item.prompt_id_index||[]){const id=String(entry.prompt_id||'');if(!id||id===canonical)continue;const chip=document.createElement('span');chip.className='prompt-chip';chip.title=entry.manual_added?(entry.auto_detected?'Rilevato e aggiunto manualmente':'Aggiunto manualmente'):'Rilevato nella pagina';const label=document.createElement('span');label.textContent=id;const remove=document.createElement('button');remove.className='prompt-remove';remove.textContent='×';remove.title='Rimuovi associazione';remove.onclick=e=>{e.stopPropagation();editPrompt(item,'remove',id)};chip.append(label,remove);row.append(chip)}const add=document.createElement('button');add.className='prompt-add';add.textContent='+ ID';add.title='Aggiungi PROMPT_ID';add.onclick=e=>{e.stopPropagation();editPrompt(item,'add')};row.append(add);return row}
+function render(){const needle=q.value.trim().toLowerCase();visible=contexts.filter(item=>!needle||searchable(item).includes(needle));list.textContent='';if(!visible.length){selected=0;const e=document.createElement('div');e.className='empty';e.textContent='Nessun risultato';list.append(e);return}selected=Math.min(selected,visible.length-1);visible.forEach((item,index)=>{const card=document.createElement('section');card.className='card'+(index===selected?' selected':'');card.role='option';card.setAttribute('aria-selected',index===selected?'true':'false');card.onclick=()=>action(item,'chrome');card.onmouseenter=()=>select(index);const nv=noteText(item);if(nv){const note=document.createElement('div');note.className='note';note.textContent=nv;card.append(note)}const title=document.createElement('div');title.className='title';title.textContent=item.title||item.url||'Contesto Chrome senza titolo';card.append(title,promptRow(item));const meta=document.createElement('div');meta.className='meta';const bits=[];if(item.twin?.codex_title)bits.push('Codex: '+item.twin.codex_title);else if(item.twin?.codex_thread)bits.push('Codex thread: '+item.twin.codex_thread);else bits.push('Nessun Codex twin');meta.textContent=bits.join(' · ');card.append(meta);const buttons=document.createElement('div');buttons.className='buttons';const chromeBtn=document.createElement('button');chromeBtn.textContent='Chrome';chromeBtn.onclick=e=>{e.stopPropagation();action(item,'chrome')};buttons.append(chromeBtn);if(item.twin){const codexBtn=document.createElement('button');codexBtn.textContent='Codex';codexBtn.onclick=e=>{e.stopPropagation();action(item,'codex')};buttons.append(codexBtn)}card.append(buttons);list.append(card)})}
+async function load(){try{const r=await fetch('/api/list',{cache:'no-store'}),data=await r.json();contexts=data.contexts||[];statusEl.textContent=contexts.length+' contesti';render()}catch(e){statusEl.textContent='Daemon non raggiungibile: '+e.message}}
+q.addEventListener('input',()=>{selected=0;render()});q.addEventListener('keydown',e=>{if(e.key==='ArrowDown'){e.preventDefault();select(selected+1)}else if(e.key==='ArrowUp'){e.preventDefault();select(selected-1)}else if(e.key==='Enter'){e.preventDefault();action(visible[selected]||visible[0],e.shiftKey?'codex':'chrome')}else if(e.key==='Escape'&&q.value){e.preventDefault();q.value='';selected=0;render()}});
+q.focus();load();setInterval(load,5000);</script></body></html>"""
 
 PROMPT_UI_ACTIONS = {
     "copy": "Copia prompt",
@@ -1180,6 +1135,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, APP.set_note_mode(payload))
             elif parsed.path == "/api/ui":
                 self._json(HTTPStatus.OK, APP.set_ui(payload))
+            elif parsed.path == "/api/context/prompts/observe":
+                self._json(HTTPStatus.OK, APP.observe_context_prompt_ids(payload))
+            elif parsed.path == "/api/context/prompts/add":
+                self._json(HTTPStatus.OK, APP.add_context_prompt_id(payload))
+            elif parsed.path == "/api/context/prompts/remove":
+                self._json(HTTPStatus.OK, APP.remove_context_prompt_id(payload))
             elif parsed.path == "/api/arm-link":
                 self._json(HTTPStatus.OK, APP.arm_link(payload))
             elif parsed.path == "/api/switch-from-chrome":

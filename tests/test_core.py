@@ -99,11 +99,36 @@ class AppTests(unittest.TestCase):
         )
         self.store.remember_codex_title("thread-dashboard", "Fix dashboard UI")
         self.store.set_note("ctx-1", "custom searchable note")
+        self.store.observe_context_prompt_ids("ctx-1", ["614458", "714458"])
 
         item = next(row for row in self.store.list_contexts() if row["id"] == "ctx-1")
         self.assertEqual("514458", item["prompt_id"])
+        self.assertEqual(["614458", "714458"], item["prompt_ids"])
         self.assertEqual("Fix dashboard UI", item["twin"]["codex_title"])
         self.assertEqual("custom searchable note", item["note"])
+
+
+    def test_context_prompt_index_supports_many_to_many_and_manual_suppression(self):
+        self.app.upsert_context(self.context)
+        self.app.upsert_context({"context_id": "ctx-2", "url": "https://example.com/other", "title": "Other"})
+        first = self.store.observe_context_prompt_ids("ctx-1", ["614458", "714458", "614458"])
+        second = self.store.observe_context_prompt_ids("ctx-2", ["614458"])
+        self.assertEqual(["614458", "714458"], [item["prompt_id"] for item in first])
+        self.assertEqual(["614458"], [item["prompt_id"] for item in second])
+        self.store.remove_context_prompt_id("ctx-1", "614458")
+        self.assertEqual(["714458"], [item["prompt_id"] for item in self.store.context_prompt_index("ctx-1")])
+        removed = next(item for item in self.store.context_prompt_index("ctx-1", include_excluded=True) if item["prompt_id"] == "614458")
+        self.assertTrue(removed["auto_detected"])
+        self.assertTrue(removed["excluded"])
+        self.store.observe_context_prompt_ids("ctx-1", ["614458"])
+        self.assertEqual(["714458"], [item["prompt_id"] for item in self.store.context_prompt_index("ctx-1")])
+        self.store.add_context_prompt_id("ctx-1", "614458")
+        restored = self.store.context_prompt_index("ctx-1")
+        self.assertEqual(["614458", "714458"], [item["prompt_id"] for item in restored])
+        self.assertTrue(next(item for item in restored if item["prompt_id"] == "614458")["manual_added"])
+        self.store.add_context_prompt_id("ctx-1", "814458")
+        self.store.remove_context_prompt_id("ctx-1", "814458")
+        self.assertNotIn("814458", [item["prompt_id"] for item in self.store.context_prompt_index("ctx-1", include_excluded=True)])
 
     def test_dashboard_focus_emits_exact_chrome_target(self):
         self.app.upsert_context(self.context)
@@ -116,11 +141,14 @@ class AppTests(unittest.TestCase):
 
     def test_search_dashboard_covers_requested_fields(self):
         page = search_dashboard_html()
-        for token in ("item.prompt_id", "item.title", "item.twin?.codex_title", "item.note", "item.codex_note"):
+        for token in ("item.prompt_id", "item.prompt_ids", "item.title", "item.twin?.codex_title", "item.note", "item.codex_note"):
             self.assertIn(token, page)
         self.assertIn("ArrowDown", page)
         self.assertIn("shiftKey", page)
         self.assertIn("window.close();", page)
+        self.assertIn("/api/context/prompts/add", page)
+        self.assertIn("/api/context/prompts/remove", page)
+        self.assertIn("prompt-chip", page)
 
     def test_prompt_arm_requires_real_context(self):
         with self.assertRaisesRegex(ValueError, "prompt_context_missing"):

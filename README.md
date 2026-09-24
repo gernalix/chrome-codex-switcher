@@ -6,14 +6,14 @@ Fedora/Wayland workflow helper for pairing a specific Chrome tab with a specific
 
 - Adds a movable/resizable floating note to normal Chrome pages.
 - Pairs one Chrome tab-context with one `codex://threads/...` Codex thread.
-- Optionally binds that pair to an explicit six-digit roadmap `PROMPT_ID`; the ID is never inferred from URLs, tab titles or Codex deep links.
+- Optionally binds that pair to an explicit six-digit roadmap `PROMPT_ID`; this canonical binding is never inferred from URLs, tab titles or Codex deep links. Separately, CSS indexes standalone six-digit IDs visible in each page as searchable context metadata.
 - Chrome → Codex: one extension shortcut opens the exact paired Codex thread with `gio open`.
 - Codex → Chrome: press Codex Desktop's **Copy chat deep link** shortcut; on GNOME Wayland the GNOME companion observes the clipboard change inside the compositor and forwards the `codex://threads/...` value to the daemon, which focuses the exact paired Chrome tab.
 - Persists the full floating-note state in SQLite: text, position, size, collapsed/hidden state, and pairings. Canonical page URL is used as a fallback, so refreshing or reopening the same Chrome page restores the existing note and layout instead of creating an empty/default one.
 - Shows the note over the active Codex conversation and hides it whenever the active thread cannot be resolved safely, so a stale note is never shown over a different chat.
 - Lets the note be edited from either Chrome or Codex. By default both surfaces share one note; enable **Separate Chrome/Codex notes** to keep two independent values for the same pair.
 - Restores/focuses the right Chrome tab even with many windows/tabs; if the paired tab is closed, it reopens its URL.
-- Provides a searchable Chrome side panel for all contexts; **Alt+Shift+S** opens it with the search field focused. It searches `PROMPT_ID`, Chrome titles, Codex chat titles, and note text.
+- Provides a searchable Chrome side panel for all contexts; **Alt+Shift+S** opens it with the search field focused. It searches canonical and page-detected `PROMPT_ID` values, Chrome titles, Codex chat titles, and note text. Indexed IDs can also be added or removed manually per context.
 - Ships a GNOME Shell companion that provides both the Codex floating-note overlay and a native GNOME Wayland clipboard bridge.
 
 The core intentionally avoids Wayland window automation. Chrome controls its own tabs; Codex is addressed through its registered `codex://` deep links.
@@ -108,7 +108,7 @@ The extension bundles its GSettings schema inside its own `schemas/` directory, 
 ```bash
 EXT="$HOME/.local/share/gnome-shell/extensions/chrome-codex-switcher-v2@gernalix.github.com"
 GSETTINGS_SCHEMA_DIR="$EXT/schemas" gsettings get org.gnome.shell.extensions.chrome-codex-switcher open-search-dashboard
-``` Start typing immediately to filter by `PROMPT_ID`, Chrome tab title, Codex chat title, or custom note text. Use **↑/↓** to select a result, **Enter** to switch to its Chrome tab, or **Shift+Enter** to open its Codex twin. Mouse users can click a row for Chrome or the explicit **Chrome**/**Codex** buttons.
+``` Start typing immediately to filter by note text, canonical/page-detected `PROMPT_ID`, Chrome tab title, or Codex chat title. CSS performs one full-page scan and then incrementally inspects changed DOM subtrees for standalone six-digit IDs; discovered IDs remain searchable history for that context. Use **+ ID** to add an association manually or **×** on a detected/manual chip to remove it. Removing an automatically detected ID creates a persistent exclusion, so later scans do not immediately restore it. Use **↑/↓** to select a result, **Enter** to switch to its Chrome tab, or **Shift+Enter** to open its Codex twin. Mouse users can click a row for Chrome or the explicit **Chrome**/**Codex** buttons. Notes are rendered first and with stronger spacing, contrast and typography because they are the primary search/recognition field.
 
 ### Floating note
 

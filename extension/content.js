@@ -50,6 +50,11 @@
   let lastUrl = location.href;
   const isWorkflowyPage = location.hostname === "workflowy.com" || location.hostname.endsWith(".workflowy.com");
   let workflowyDashboardObserver = null;
+  let promptIdObserver = null;
+  let promptIdFlushTimer = null;
+  let promptScanContextId = null;
+  const promptIdsSeen = new Set();
+  const pendingPromptIds = new Set();
   let lifecyclePort = null;
   let pageUnloading = false;
 
@@ -58,6 +63,9 @@
     clearTimeout(noteTimer);
     clearTimeout(uiTimer);
     clearTimeout(refreshRetryTimer);
+    clearTimeout(promptIdFlushTimer);
+    promptIdObserver?.disconnect();
+    promptIdObserver = null;
     workflowyDashboardObserver?.disconnect();
     workflowyDashboardObserver = null;
     host.remove();
@@ -253,6 +261,75 @@
     }
   });
 
+  function promptIdsFromText(raw) {
+    const text = String(raw || "");
+    const ids = new Set();
+    const pattern = /(?:^|[^0-9])(\d{6})(?![0-9])/g;
+    let match;
+    while ((match = pattern.exec(text)) !== null) ids.add(match[1]);
+    return ids;
+  }
+
+  function schedulePromptIdFlush(delay = 450) {
+    clearTimeout(promptIdFlushTimer);
+    promptIdFlushTimer = setTimeout(() => flushPromptIds().catch(() => {}), delay);
+  }
+
+  function queuePromptIdsFromText(raw) {
+    for (const promptId of promptIdsFromText(raw)) {
+      if (promptIdsSeen.has(promptId)) continue;
+      promptIdsSeen.add(promptId);
+      pendingPromptIds.add(promptId);
+    }
+    if (pendingPromptIds.size) schedulePromptIdFlush();
+  }
+
+  async function flushPromptIds() {
+    if (!context?.id || !pendingPromptIds.size) return;
+    const contextId = context.id;
+    const promptIds = [...pendingPromptIds];
+    pendingPromptIds.clear();
+    const result = await send({type: "context:prompt-scan", contextId, promptIds});
+    if (!result?.ok && context?.id === contextId) {
+      for (const promptId of promptIds) pendingPromptIds.add(promptId);
+      schedulePromptIdFlush(1500);
+    }
+  }
+
+  function scanFullPageForPromptIds() {
+    if (!document.body) return;
+    queuePromptIdsFromText(document.body.innerText || document.body.textContent || "");
+  }
+
+  function nodeTextForPromptScan(node) {
+    if (!node) return "";
+    if (node.nodeType === Node.TEXT_NODE) {
+      const parent = node.parentElement;
+      if (!parent || parent.closest("#chrome-codex-switcher-host")) return "";
+      if (["SCRIPT", "STYLE", "NOSCRIPT"].includes(parent.tagName)) return "";
+      return node.nodeValue || "";
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+    if (node.id === "chrome-codex-switcher-host" || node.closest("#chrome-codex-switcher-host")) return "";
+    if (["SCRIPT", "STYLE", "NOSCRIPT"].includes(node.tagName)) return "";
+    return node.textContent || "";
+  }
+
+  function installPromptIdScanner() {
+    if (promptIdObserver || !document.body) return;
+    promptIdObserver = new MutationObserver(mutations => {
+      for (const mutation of mutations) {
+        if (mutation.type === "characterData") {
+          queuePromptIdsFromText(nodeTextForPromptScan(mutation.target));
+          continue;
+        }
+        for (const node of mutation.addedNodes) queuePromptIdsFromText(nodeTextForPromptScan(node));
+      }
+    });
+    promptIdObserver.observe(document.body, {subtree: true, childList: true, characterData: true});
+    scanFullPageForPromptIds();
+  }
+
   function flash(text, ms = 2200) {
     flashEl.textContent = text;
     flashEl.classList.add("show");
@@ -286,7 +363,15 @@
 
   function applyContext(next) {
     if (!next) return;
+    const contextChanged = promptScanContextId !== next.id;
     context = next;
+    if (contextChanged) {
+      promptScanContextId = next.id;
+      promptIdsSeen.clear();
+      pendingPromptIds.clear();
+      clearTimeout(promptIdFlushTimer);
+      if (promptIdObserver) queueMicrotask(scanFullPageForPromptIds);
+    }
     title.textContent = next.title || document.title || "Context Twin";
     if (shadow.activeElement !== note) note.value = next.note || "";
     independent.checked = !!next.notes_independent;
@@ -317,6 +402,7 @@
     if (result?.ok && result.context?.id) {
       refreshAttempts = 0;
       applyContext(result.context);
+      installPromptIdScanner();
       return true;
     }
     status.textContent = "daemon offline";
@@ -524,6 +610,9 @@
     clearTimeout(noteTimer);
     clearTimeout(uiTimer);
     clearTimeout(refreshRetryTimer);
+    clearTimeout(promptIdFlushTimer);
+    promptIdObserver?.disconnect();
+    promptIdObserver = null;
     workflowyDashboardObserver?.disconnect();
     workflowyDashboardObserver = null;
   }, {once: true});

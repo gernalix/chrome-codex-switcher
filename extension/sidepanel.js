@@ -8,18 +8,18 @@ const send = message => new Promise(resolve => chrome.runtime.sendMessage(messag
 function searchText(item) {
   return [
     item.prompt_id,
+    ...(item.prompt_ids || []),
     item.title,
     item.twin?.codex_title,
     item.note,
     item.codex_note,
-    // Keep the previous URL/thread lookup behavior as a backwards-compatible extra.
     item.url,
     item.twin?.codex_thread
   ].filter(Boolean).join(" ").toLowerCase();
 }
 
 function noteText(item) {
-  return [...new Set([item.note, item.codex_note].filter(Boolean))].join(" · ");
+  return [...new Set([item.note, item.codex_note].filter(Boolean))].join("\n\n");
 }
 
 function select(index) {
@@ -39,10 +39,82 @@ function select(index) {
 async function openItem(item, target = "chrome") {
   if (!item) return;
   if (target === "codex" && item.twin) {
-    await send({type:"side:codex", context:item});
+    await send({type: "side:codex", context: item});
     return;
   }
-  await send({type:"side:focus", context:item});
+  await send({type: "side:focus", context: item});
+}
+
+async function editPromptId(item, mode, promptId = null) {
+  let value = promptId;
+  if (mode === "add") {
+    value = (window.prompt("PROMPT_ID da associare (6 cifre)") || "").trim();
+    if (!value) return;
+    if (!/^\d{6}$/.test(value)) {
+      window.alert("Il PROMPT_ID deve contenere esattamente 6 cifre.");
+      return;
+    }
+  }
+  const result = await send({
+    type: mode === "add" ? "side:prompt-add" : "side:prompt-remove",
+    contextId: item.id,
+    promptId: value
+  });
+  if (!result?.ok) {
+    window.alert("Aggiornamento PROMPT_ID fallito: " + (result?.error || "daemon non disponibile"));
+    return;
+  }
+  await load();
+}
+
+function promptRow(item) {
+  const row = document.createElement("div");
+  row.className = "prompt-ids";
+  const canonical = String(item.prompt_id || "");
+
+  if (canonical) {
+    const chip = document.createElement("span");
+    chip.className = "prompt-chip bound";
+    chip.title = "Binding canonico";
+    chip.textContent = canonical;
+    row.append(chip);
+  }
+
+  for (const entry of item.prompt_id_index || []) {
+    const promptId = String(entry.prompt_id || "");
+    if (!promptId || promptId === canonical) continue;
+    const chip = document.createElement("span");
+    chip.className = "prompt-chip";
+    chip.title = entry.manual_added
+      ? (entry.auto_detected ? "Rilevato e aggiunto manualmente" : "Aggiunto manualmente")
+      : "Rilevato nella pagina";
+
+    const label = document.createElement("span");
+    label.textContent = promptId;
+
+    const remove = document.createElement("button");
+    remove.className = "prompt-remove";
+    remove.textContent = "×";
+    remove.title = "Rimuovi associazione";
+    remove.onclick = event => {
+      event.stopPropagation();
+      editPromptId(item, "remove", promptId);
+    };
+
+    chip.append(label, remove);
+    row.append(chip);
+  }
+
+  const add = document.createElement("button");
+  add.className = "prompt-add";
+  add.textContent = "+ ID";
+  add.title = "Aggiungi PROMPT_ID";
+  add.onclick = event => {
+    event.stopPropagation();
+    editPromptId(item, "add");
+  };
+  row.append(add);
+  return row;
 }
 
 function render() {
@@ -67,22 +139,27 @@ function render() {
     if (index === selectedIndex) card.classList.add("selected");
     card.onclick = () => openItem(item, "chrome");
 
+    const noteValue = noteText(item);
+    if (noteValue) {
+      const note = document.createElement("div");
+      note.className = "note";
+      note.textContent = noteValue;
+      card.append(note);
+    }
+
     const title = document.createElement("div");
     title.className = "title";
     title.textContent = item.title || item.url || "Untitled Chrome context";
-
-    const note = document.createElement("div");
-    note.className = "note";
-    note.textContent = noteText(item);
+    card.append(title, promptRow(item));
 
     const meta = document.createElement("div");
     meta.className = "meta";
     const metadata = [];
-    if (item.prompt_id) metadata.push(`PROMPT_ID ${item.prompt_id}`);
     if (item.twin?.codex_title) metadata.push(`Codex: ${item.twin.codex_title}`);
     else if (item.twin?.codex_thread) metadata.push(`Codex thread: ${item.twin.codex_thread}`);
     else metadata.push("No Codex twin");
     meta.textContent = metadata.join(" · ");
+    card.append(meta);
 
     const buttons = document.createElement("div");
     buttons.className = "buttons";
@@ -108,20 +185,20 @@ function render() {
       unlink.textContent = "Unlink";
       unlink.onclick = async event => {
         event.stopPropagation();
-        await send({type:"side:unlink", contextId:item.id});
+        await send({type: "side:unlink", contextId: item.id});
         await load();
       };
       buttons.append(unlink);
     }
 
     card.onmouseenter = () => select(index);
-    card.append(title, note, meta, buttons);
+    card.append(buttons);
     list.append(card);
   }
 }
 
 async function load() {
-  const result = await send({type:"side:list"});
+  const result = await send({type: "side:list"});
   contexts = result?.contexts || [];
   render();
 }

@@ -704,6 +704,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }}));
       } else if (message.type === "context:ui") {
         sendResponse(await api("/api/ui", {method: "POST", body: {context_id: message.contextId, ...message.ui}}));
+      } else if (message.type === "context:prompt-scan") {
+        sendResponse(await api("/api/context/prompts/observe", {method: "POST", body: {
+          context_id: message.contextId,
+          prompt_ids: Array.isArray(message.promptIds) ? message.promptIds : []
+        }}));
+      } else if (message.type === "side:prompt-add") {
+        sendResponse(await api("/api/context/prompts/add", {method: "POST", body: {
+          context_id: message.contextId,
+          prompt_id: message.promptId
+        }}));
+      } else if (message.type === "side:prompt-remove") {
+        sendResponse(await api("/api/context/prompts/remove", {method: "POST", body: {
+          context_id: message.contextId,
+          prompt_id: message.promptId
+        }}));
       } else if (message.type === "context:arm") {
         sendResponse(await armCurrent());
       } else if (message.type === "context:switch") {

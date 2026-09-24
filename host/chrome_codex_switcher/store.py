@@ -44,6 +44,20 @@ CREATE TABLE IF NOT EXISTS prompt_bindings (
     updated_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS context_prompt_ids (
+    context_id TEXT NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
+    prompt_id TEXT NOT NULL,
+    auto_detected INTEGER NOT NULL DEFAULT 0,
+    manual_added INTEGER NOT NULL DEFAULT 0,
+    excluded INTEGER NOT NULL DEFAULT 0,
+    first_seen_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY(context_id, prompt_id),
+    CHECK(length(prompt_id)=6 AND prompt_id GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]')
+);
+
+CREATE INDEX IF NOT EXISTS idx_context_prompt_ids_prompt ON context_prompt_ids(prompt_id);
+
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -301,6 +315,117 @@ class Store:
             ).fetchone()
             return dict(row) if row else None
 
+    @staticmethod
+    def _normalize_prompt_id(value: Any) -> str:
+        prompt_id = str(value or "").strip()
+        if len(prompt_id) != 6 or not prompt_id.isdigit():
+            raise ValueError("invalid_prompt_id")
+        return prompt_id
+
+    @staticmethod
+    def _prompt_index_row(row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        item["auto_detected"] = bool(item.get("auto_detected"))
+        item["manual_added"] = bool(item.get("manual_added"))
+        item["excluded"] = bool(item.get("excluded"))
+        return item
+
+    def context_prompt_index(
+        self,
+        context_id: str,
+        *,
+        include_excluded: bool = False,
+    ) -> list[dict[str, Any]]:
+        clause = "" if include_excluded else (
+            " AND (manual_added=1 OR (auto_detected=1 AND excluded=0))"
+        )
+        with self._connect() as db:
+            rows = db.execute(
+                f"""SELECT context_id,prompt_id,auto_detected,manual_added,excluded,
+                           first_seen_at,updated_at
+                    FROM context_prompt_ids
+                    WHERE context_id=?{clause}
+                    ORDER BY prompt_id""",
+                (context_id,),
+            ).fetchall()
+        return [self._prompt_index_row(row) for row in rows]
+
+    def observe_context_prompt_ids(
+        self,
+        context_id: str,
+        prompt_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        clean = sorted({self._normalize_prompt_id(value) for value in prompt_ids})
+        ts = now()
+        with self._connect() as db:
+            if not db.execute("SELECT 1 FROM contexts WHERE id=?", (context_id,)).fetchone():
+                raise ValueError("context_not_found")
+            for prompt_id in clean:
+                db.execute(
+                    """INSERT INTO context_prompt_ids(
+                         context_id,prompt_id,auto_detected,manual_added,excluded,
+                         first_seen_at,updated_at
+                       ) VALUES(?,?,1,0,0,?,?)
+                       ON CONFLICT(context_id,prompt_id) DO UPDATE SET
+                         auto_detected=1,
+                         updated_at=excluded.updated_at""",
+                    (context_id, prompt_id, ts, ts),
+                )
+        return self.context_prompt_index(context_id)
+
+    def add_context_prompt_id(
+        self,
+        context_id: str,
+        prompt_id: str,
+    ) -> list[dict[str, Any]]:
+        prompt_id = self._normalize_prompt_id(prompt_id)
+        ts = now()
+        with self._connect() as db:
+            if not db.execute("SELECT 1 FROM contexts WHERE id=?", (context_id,)).fetchone():
+                raise ValueError("context_not_found")
+            db.execute(
+                """INSERT INTO context_prompt_ids(
+                     context_id,prompt_id,auto_detected,manual_added,excluded,
+                     first_seen_at,updated_at
+                   ) VALUES(?,?,0,1,0,?,?)
+                   ON CONFLICT(context_id,prompt_id) DO UPDATE SET
+                     manual_added=1,
+                     excluded=0,
+                     updated_at=excluded.updated_at""",
+                (context_id, prompt_id, ts, ts),
+            )
+        return self.context_prompt_index(context_id)
+
+    def remove_context_prompt_id(
+        self,
+        context_id: str,
+        prompt_id: str,
+    ) -> list[dict[str, Any]]:
+        prompt_id = self._normalize_prompt_id(prompt_id)
+        with self._connect() as db:
+            if not db.execute("SELECT 1 FROM contexts WHERE id=?", (context_id,)).fetchone():
+                raise ValueError("context_not_found")
+            row = db.execute(
+                """SELECT auto_detected FROM context_prompt_ids
+                   WHERE context_id=? AND prompt_id=?""",
+                (context_id, prompt_id),
+            ).fetchone()
+            if row is None:
+                return self.context_prompt_index(context_id)
+            if bool(row["auto_detected"]):
+                db.execute(
+                    """UPDATE context_prompt_ids
+                       SET manual_added=0, excluded=1, updated_at=?
+                       WHERE context_id=? AND prompt_id=?""",
+                    (now(), context_id, prompt_id),
+                )
+            else:
+                db.execute(
+                    "DELETE FROM context_prompt_ids WHERE context_id=? AND prompt_id=?",
+                    (context_id, prompt_id),
+                )
+        return self.context_prompt_index(context_id)
+
     def list_contexts(self) -> list[dict[str, Any]]:
         with self._connect() as db:
             rows = db.execute(
@@ -315,6 +440,19 @@ class Store:
                 ORDER BY c.updated_at DESC
                 """
             ).fetchall()
+            prompt_rows = db.execute(
+                """SELECT context_id,prompt_id,auto_detected,manual_added,excluded,
+                          first_seen_at,updated_at
+                   FROM context_prompt_ids
+                   WHERE manual_added=1 OR (auto_detected=1 AND excluded=0)
+                   ORDER BY prompt_id"""
+            ).fetchall()
+
+        prompt_index: dict[str, list[dict[str, Any]]] = {}
+        for row in prompt_rows:
+            association = self._prompt_index_row(row)
+            prompt_index.setdefault(str(association["context_id"]), []).append(association)
+
         codex_titles = self.get_meta("codex_ui_titles", {})
         if not isinstance(codex_titles, dict):
             codex_titles = {}
@@ -334,6 +472,9 @@ class Store:
                 item.pop("codex_thread", None)
                 item.pop("codex_deep_link", None)
                 item["twin"] = None
+            associations = prompt_index.get(str(item["id"]), [])
+            item["prompt_id_index"] = associations
+            item["prompt_ids"] = [entry["prompt_id"] for entry in associations]
             result.append(item)
         return result
 
