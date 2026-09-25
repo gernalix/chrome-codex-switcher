@@ -303,7 +303,8 @@ class AppTests(unittest.TestCase):
         self.app.upsert_context({"context_id": "ctx-roll", "url": old_url, "title": "Worker"})
         self.app.set_note({"context_id": "ctx-roll", "note": "keep continuity"})
         self.store.add_context_prompt_id("ctx-roll", "514458")
-        self.store.link_twin("ctx-roll", "thread-roll", "codex://threads/thread-roll")
+        self.app.arm_link({"context_id": "ctx-roll", "url": old_url, "title": "Worker"})
+        self.app.handle_clipboard("codex://threads/thread-roll")
 
         result = self.app.replace_context_url({
             "context_id": "ctx-roll",
