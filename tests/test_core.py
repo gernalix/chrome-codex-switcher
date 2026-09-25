@@ -297,6 +297,42 @@ class AppTests(unittest.TestCase):
         self.assertEqual(context["codex_note"], "Fix PersonalHub")
         self.assertFalse(context["notes_independent"])
 
+    def test_context_url_replacement_preserves_notes_bindings_and_supersedes_old_url(self):
+        old_url = "https://chatgpt.com/c/old-worker"
+        new_url = "https://chatgpt.com/c/new-worker"
+        self.app.upsert_context({"context_id": "ctx-roll", "url": old_url, "title": "Worker"})
+        self.app.set_note({"context_id": "ctx-roll", "note": "keep continuity"})
+        self.store.add_context_prompt_id("ctx-roll", "514458")
+        self.store.link_twin("ctx-roll", "thread-roll", "codex://threads/thread-roll")
+
+        result = self.app.replace_context_url({
+            "context_id": "ctx-roll",
+            "old_url": old_url,
+            "new_url": new_url,
+        })
+        self.assertTrue(result["ok"])
+        context = result["context"]
+        self.assertEqual("ctx-roll", context["id"])
+        self.assertEqual(new_url, context["url"])
+        self.assertEqual("keep continuity", context["note"])
+        self.assertEqual("keep continuity", context["codex_note"])
+        self.assertEqual("thread-roll", self.store.twin_by_context("ctx-roll")["codex_thread"])
+        self.assertEqual(["514458"], [row["prompt_id"] for row in self.store.context_prompt_index("ctx-roll")])
+
+        reopened = self.app.upsert_context({
+            "context_id": "fresh-tab",
+            "url": old_url,
+            "title": "Stale old tab",
+        })
+        self.assertEqual("ctx-roll", reopened["id"])
+        self.assertEqual(new_url, reopened["url"])
+        self.assertEqual("keep continuity", reopened["note"])
+
+        _seq, events = self.broker.wait_after(0, 0)
+        replaced = [event for event in events if event["type"] == "context_url_replaced"][-1]
+        self.assertEqual(old_url, replaced["payload"]["old_url"])
+        self.assertEqual(new_url, replaced["payload"]["new_url"])
+
     def test_note_survives_reopened_tab_by_canonical_url(self):
         self.app.upsert_context({
             "context_id": "ctx-original",

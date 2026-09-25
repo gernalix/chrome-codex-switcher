@@ -36,6 +36,11 @@ class ExtensionLifecycleContractTests(unittest.TestCase):
         self.assertIn("127.0.0.1:43817", BACKGROUND)
 
 
+    def test_context_url_replacement_updates_extension_map_and_tab(self) -> None:
+        self.assertIn('event.type === "context_url_replaced"', BACKGROUND)
+        self.assertIn("contextId, url: newUrl", BACKGROUND)
+        self.assertIn("chrome.tabs.update(Number(tabId), {url: newUrl})", BACKGROUND)
+
     def test_prompt_id_scanner_and_manual_dashboard_index_contract(self) -> None:
         self.assertIn("promptIdsFromText", CONTENT)
         self.assertIn("MutationObserver", CONTENT)

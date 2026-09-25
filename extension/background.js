@@ -592,6 +592,22 @@ async function processEvent(event) {
         }
       });
     } catch {}
+  } else if (event.type === "context_url_replaced") {
+    const map = await readTabMap();
+    const oldUrl = canonicalUrl(event.payload.old_url || "");
+    const newUrl = canonicalUrl(event.payload.new_url || "");
+    const contextId = event.payload.context_id;
+    for (const [tabId, value] of Object.entries(map)) {
+      if (value.contextId !== contextId && canonicalUrl(value.url || "") !== oldUrl) continue;
+      map[tabId] = {...value, contextId, url: newUrl, lastSeen: Date.now()};
+      try {
+        const tab = await chrome.tabs.get(Number(tabId));
+        if (canonicalUrl(tab.url || tab.pendingUrl || "") === oldUrl) {
+          await chrome.tabs.update(Number(tabId), {url: newUrl});
+        }
+      } catch {}
+    }
+    await writeTabMap(map);
   } else if (["linked", "unlinked", "note_changed", "note_mode_changed"].includes(event.type)) {
     const tabs = await chrome.tabs.query({});
     const map = await readTabMap();

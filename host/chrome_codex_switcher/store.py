@@ -176,6 +176,68 @@ class Store:
             )
         return self.get_context(effective_id) or {}
 
+    def replace_context_url(self, context_id: str, old_url: str, new_url: str) -> dict[str, Any]:
+        context_id = str(context_id or "").strip()
+        old_url = str(old_url or "").strip()
+        new_url = str(new_url or "").strip()
+        if not context_id or not old_url or not new_url:
+            raise ValueError("context_url_replace_missing")
+        if old_url == new_url:
+            context = self.get_context(context_id)
+            if not context:
+                raise ValueError("context_not_found")
+            return context
+
+        ts = now()
+        with self._connect() as db:
+            current = db.execute(
+                "SELECT id,url FROM contexts WHERE id=?",
+                (context_id,),
+            ).fetchone()
+            if current is None:
+                raise ValueError("context_not_found")
+
+            current_url = str(current["url"] or "")
+            resolved_old = self._resolve_context_url_db(db, old_url)
+            resolved_current = self._resolve_context_url_db(db, current_url)
+            if current_url != old_url and resolved_current != resolved_old and current_url != new_url:
+                raise ValueError("context_url_source_mismatch")
+
+            target = db.execute(
+                "SELECT id FROM contexts WHERE url=? AND id<>?",
+                (new_url, context_id),
+            ).fetchone()
+            if target is not None:
+                raise ValueError("context_url_target_conflict")
+
+            alias = db.execute(
+                "SELECT context_id FROM context_url_supersessions WHERE old_url=?",
+                (old_url,),
+            ).fetchone()
+            if alias is not None and str(alias["context_id"]) != context_id:
+                raise ValueError("context_url_alias_conflict")
+
+            db.execute(
+                "UPDATE context_url_supersessions SET new_url=?, updated_at=? WHERE context_id=?",
+                (new_url, ts, context_id),
+            )
+            db.execute(
+                """
+                INSERT INTO context_url_supersessions(old_url,new_url,context_id,created_at,updated_at)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(old_url) DO UPDATE SET
+                    new_url=excluded.new_url,
+                    context_id=excluded.context_id,
+                    updated_at=excluded.updated_at
+                """,
+                (old_url, new_url, context_id, ts, ts),
+            )
+            db.execute(
+                "UPDATE contexts SET url=?, updated_at=? WHERE id=?",
+                (new_url, ts, context_id),
+            )
+        return self.get_context(context_id) or {}
+
     def get_context(self, context_id: str) -> dict[str, Any] | None:
         with self._connect() as db:
             row = db.execute("SELECT * FROM contexts WHERE id=?", (context_id,)).fetchone()

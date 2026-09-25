@@ -589,6 +589,19 @@ class App:
         title = str(payload.get("title", ""))
         return self.store.upsert_context(context_id, url, title)
 
+    def replace_context_url(self, payload: dict[str, Any]) -> dict[str, Any]:
+        context_id = str(payload.get("context_id") or "").strip()
+        old_url = canonical_url(str(payload.get("old_url") or ""))
+        new_url = canonical_url(str(payload.get("new_url") or ""))
+        context = self.store.replace_context_url(context_id, old_url, new_url)
+        event = {
+            "context_id": context["id"],
+            "old_url": old_url,
+            "new_url": context["url"],
+        }
+        self.broker.emit("context_url_replaced", event)
+        return {"ok": True, "context": context, "replacement": event}
+
     def arm_link(self, payload: dict[str, Any]) -> dict[str, Any]:
         context = self.upsert_context(payload)
         pending = {
@@ -1129,6 +1142,8 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._read_json()
             if parsed.path == "/api/context":
                 self._json(HTTPStatus.OK, {"ok": True, "context": APP.upsert_context(payload)})
+            elif parsed.path == "/api/context/replace-url":
+                self._json(HTTPStatus.OK, APP.replace_context_url(payload))
             elif parsed.path == "/api/note":
                 self._json(HTTPStatus.OK, APP.set_note(payload))
             elif parsed.path == "/api/note-mode":
