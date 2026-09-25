@@ -27,6 +27,17 @@ CREATE TABLE IF NOT EXISTS contexts (
 
 CREATE INDEX IF NOT EXISTS idx_contexts_url ON contexts(url);
 
+CREATE TABLE IF NOT EXISTS context_url_supersessions (
+    old_url TEXT PRIMARY KEY,
+    new_url TEXT NOT NULL,
+    context_id TEXT NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_context_url_supersessions_new_url
+ON context_url_supersessions(new_url);
+
 CREATE TABLE IF NOT EXISTS twins (
     codex_thread TEXT PRIMARY KEY,
     codex_deep_link TEXT NOT NULL UNIQUE,
@@ -99,10 +110,32 @@ class Store:
         result["notes_independent"] = bool(result.get("notes_independent", 0))
         return result
 
+    @staticmethod
+    def _resolve_context_url_db(db: sqlite3.Connection, url: str) -> str:
+        current = str(url or "")
+        seen: set[str] = set()
+        for _ in range(16):
+            if not current or current in seen:
+                break
+            seen.add(current)
+            row = db.execute(
+                "SELECT new_url FROM context_url_supersessions WHERE old_url=?",
+                (current,),
+            ).fetchone()
+            if row is None:
+                break
+            current = str(row["new_url"] or current)
+        return current
+
+    def resolve_context_url(self, url: str) -> str:
+        with self._connect() as db:
+            return self._resolve_context_url_db(db, url)
+
     def upsert_context(self, context_id: str, url: str, title: str = "") -> dict[str, Any]:
         ts = now()
         effective_id = context_id
         with self._connect() as db:
+            url = self._resolve_context_url_db(db, url)
             current = db.execute(
                 "SELECT id FROM contexts WHERE id=?",
                 (context_id,),
