@@ -22,9 +22,11 @@ jobs:
       - name: Validate extension JSON
         run: python -m json.tool extension/manifest.json >/dev/null
       - name: Validate Chrome extension JavaScript
-        run: node --check extension/background.js && node --check extension/content.js && node --check extension/sidepanel.js
+        run: node --check extension/background.js && node --check extension/content.js && node --check extension/sidepanel.js && node --check extension/pn-cards.js
       - name: Validate GNOME companion JavaScript
-        run: node --check contrib/gnome-extension@gernalix.github.com/extension.js
+        run: node --check contrib/gnome-extension@gernalix.github.com/extension.js && node --check contrib/gnome-extension@gernalix.github.com/runtime.js
+      - name: Desktop bridge without overlay actors
+        run: node tests/e2e/test_gnome_bridge_runtime.cjs
       - name: Validate GNOME settings schema
         run: glib-compile-schemas --strict --dry-run contrib/gnome-extension@gernalix.github.com/schemas
       - name: Shell syntax

@@ -5,6 +5,8 @@ let visibleRows = [];
 let selectedIndex = 0;
 const send = message => new Promise(resolve => chrome.runtime.sendMessage(message, resolve));
 
+const controls = PnCardsUI.toolbar(document.querySelector("header"), () => {selectedIndex = 0; render();});
+
 function searchText(item) {
   return [
     item.prompt_id,
@@ -119,7 +121,7 @@ function promptRow(item) {
 
 function render() {
   const needle = q.value.trim().toLowerCase();
-  visibleRows = contexts.filter(item => !needle || searchText(item).includes(needle));
+  visibleRows = PnCardsUI.rows(contexts, needle, controls, searchText);
   list.textContent = "";
   if (!visibleRows.length) {
     selectedIndex = 0;
@@ -139,8 +141,17 @@ function render() {
     if (index === selectedIndex) card.classList.add("selected");
     card.onclick = () => openItem(item, "chrome");
 
+    PnCardsUI.card(card, item, async values => {
+      const result = await send({type: "pn:manual", values});
+      if (!result?.ok) throw new Error(result?.error || "daemon non disponibile");
+      await load(true);
+    }, async note => {
+      const result = await send({type: "context:note", contextId: item.id, note});
+      if (!result?.ok) throw new Error(result?.error || "salvataggio fallito");
+      await load(true);
+    });
     const noteValue = noteText(item);
-    if (noteValue) {
+    if (noteValue && !item.pn_card) {
       const note = document.createElement("div");
       note.className = "note";
       note.textContent = noteValue;
@@ -197,10 +208,10 @@ function render() {
   }
 }
 
-async function load() {
+async function load(force = false) {
   const result = await send({type: "side:list"});
   contexts = result?.contexts || [];
-  render();
+  if (force || (!list.querySelector("details[open]") && !list.contains(document.activeElement))) render();
 }
 
 q.addEventListener("input", () => {
