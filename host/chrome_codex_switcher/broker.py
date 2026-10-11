@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import deque
-from typing import Any
+from typing import Any, Callable
 
 
 class EventBroker:
-    def __init__(self, max_events: int = 256):
+    def __init__(self, max_events: int = 256, *, on_event: Callable[[str], None] | None = None):
         self._condition = threading.Condition()
         self._events: deque[dict[str, Any]] = deque(maxlen=max_events)
         self._seq = 0
+        self._on_event = on_event
 
     def emit(self, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self._condition:
@@ -18,7 +20,13 @@ class EventBroker:
             event = {"seq": self._seq, "type": event_type, "payload": payload}
             self._events.append(event)
             self._condition.notify_all()
-            return event
+        if self._on_event:
+            # Auxiliary integrations must not break CCS's own event delivery.
+            try:
+                self._on_event(event_type)
+            except Exception as exc:
+                logging.warning("CCS optional event hook failed: %s", type(exc).__name__)
+        return event
 
     def wait_after(self, after: int, timeout: float = 25.0) -> tuple[int, list[dict[str, Any]]]:
         deadline = time.monotonic() + max(0.0, timeout)
