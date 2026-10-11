@@ -929,6 +929,7 @@ class App:
 
 
 def search_dashboard_html() -> str:
+    from .nv import release_label
     page = r"""<!doctype html>
 <html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Context Search</title>
 <style>
@@ -941,7 +942,7 @@ header{position:sticky;top:0;background:Canvas;padding:18px 18px 12px;border-bot
 .prompt-chip{display:inline-flex;align-items:center;gap:4px;font:600 .78rem/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid #7776;background:#7772;border-radius:999px;padding:4px 7px}.prompt-chip.bound{font-weight:750}
 .prompt-remove,.prompt-add{padding:1px 5px;min-width:0;border-radius:999px}.prompt-remove{border:0;background:transparent}.meta{font-size:.76rem;opacity:.58;margin-top:8px;overflow-wrap:anywhere}.buttons{display:flex;gap:7px;margin-top:10px}
 button{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid #7777;background:ButtonFace;color:ButtonText;cursor:pointer}.empty{padding:32px 12px;text-align:center;opacity:.65}
-__PN_CSS__</style></head><body><header><h1>Context Search</h1><input id="q" type="search" autocomplete="off" placeholder="Cerca note, PROMPT_ID, titoli Chrome/Codex…"><div id="status">Caricamento…</div></header>
+__PN_CSS__</style></head><body><header><h1>Context Search <small id="project-nv" style="float:right;font-size:.7rem;font-weight:400;opacity:.65">__PROJECT_NV__</small></h1><input id="q" type="search" autocomplete="off" placeholder="Cerca note, PROMPT_ID, titoli Chrome/Codex…"><div id="status">Caricamento…</div></header>
 <main id="list" role="listbox" aria-label="Chrome and Codex contexts"></main><script>__PN_JS__</script><script>
 const q=document.querySelector('#q'),list=document.querySelector('#list'),statusEl=document.querySelector('#status');let contexts=[],visible=[],selected=0;
 const searchable=item=>[item.prompt_id,...(item.prompt_ids||[]),item.title,item.twin?.codex_title,item.note,item.codex_note].filter(Boolean).join(' ').toLowerCase();
@@ -958,7 +959,7 @@ q.addEventListener('input',()=>{selected=0;render()});q.addEventListener('keydow
 q.focus();load();setInterval(load,5000);</script></body></html>"""
 
     extension = Path(__file__).resolve().parents[2] / "extension"
-    return page.replace("__PN_CSS__", (extension / "pn-cards.css").read_text()).replace("__PN_JS__", (extension / "pn-cards.js").read_text())
+    return page.replace("__PROJECT_NV__", release_label()).replace("__PN_CSS__", (extension / "pn-cards.css").read_text()).replace("__PN_JS__", (extension / "pn-cards.js").read_text())
 
 PROMPT_UI_ACTIONS = {
     "copy": "Copia prompt",

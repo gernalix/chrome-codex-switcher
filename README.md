@@ -240,3 +240,11 @@ requested setting is unavailable, the native launcher must fail closed rather th
 silently select a fallback.
 
 Pn presentation tests: `PYTHONPATH=host python3 -m unittest discover -s tests -p 'test_pn_cards.py' -v`. GNOME actor-free runtime test: `node tests/e2e/test_gnome_bridge_runtime.cjs`. These supplement the existing note persistence E2E and regression suite. No CCS schema migration is required.
+
+## Project release number
+
+Root `NV.txt` is the release source, independent of the extension compatibility
+version in its manifest. The installer copies it alongside the deployed host.
+The search dashboard displays the derived NV; a missing or invalid source shows
+`NV unavailable`. Normal commits retain NV. Explicit releases increment once and
+reconcile the integrated Git SHA through MegaVault's existing version registry.

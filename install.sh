@@ -13,6 +13,7 @@ command -v systemctl >/dev/null || { echo "ERROR: systemctl is required" >&2; ex
 mkdir -p "$PREFIX" "$BIN_DIR" "$SYSTEMD_DIR"
 rm -rf "$PREFIX/host" "$PREFIX/contrib"
 cp -a "$ROOT/host" "$PREFIX/host"
+install -m 0644 "$ROOT/NV.txt" "$PREFIX/NV.txt"
 cp -a "$ROOT/contrib" "$PREFIX/contrib"
 
 # Keep the deployed extension directory itself stable. Flatpak Chrome may keep
