@@ -59,7 +59,7 @@ class PnCards:
                     self._results[pid] = None
                     return None  # Do not reuse an entry that vanished from the authority.
                 project = None
-                if cached and cached['record']['updated_at'] == row[0]:
+                if cached and 'human_description' in cached['record'] and cached['record']['updated_at'] == row[0]:
                     record = cached['record']
                 else:
                     proc = subprocess.run(
@@ -76,7 +76,7 @@ class PnCards:
                 project_row = conn.execute('SELECT name FROM projects WHERE project_id=?', (record['project_id'],)).fetchone()
                 project = project_row[0] if project_row else None
             # Cache only the verified projection, never the private complete prompt body.
-            safe = {k: record.get(k) for k in ('prompt_id', 'title', 'updated_at', 'project_id', 'status', 'chat_ids', 'chatgpt_source_url')}
+            safe = {k: record.get(k) for k in ('prompt_id', 'title', 'updated_at', 'project_id', 'status', 'chat_ids', 'chatgpt_source_url', 'human_description', 'description_metadata')}
             result = {'record': safe, 'project': project, 'verified_at': stamp, 'offline': False}
             self.store.set_meta(key, result)
             self._results[pid] = result
@@ -110,7 +110,9 @@ class PnCards:
         context['pn_card'] = {
             'id': pid,
             'title': manual.get('title') or record.get('title') or note_title or 'non disponibile',
-            'what': manual.get('what') or 'non disponibile',
+            'what': manual.get('what') if (manual.get('what') or '').strip().lower() not in ('', 'non disponibile') else record.get('human_description') or None,
+            'what_source': 'Manuale locale (utente)' if (manual.get('what') or '').strip().lower() not in ('', 'non disponibile') else 'Descrizione canonica MegaVault' if record.get('human_description') else 'Descrizione da completare in MegaVault',
+            'description_metadata': record.get('description_metadata'),
             'why': manual.get('why') or 'non disponibile',
             'status': status,
             'status_source': 'Manuale locale (utente)' if timestamp else 'Nessun feed Codex verificato',

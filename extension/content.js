@@ -379,7 +379,7 @@
     if (next.pn_card && (contextChanged || !pnInfo.querySelector("details[open]"))) {
       pnInfo.textContent = "";
       const what = document.createElement("div");
-      what.textContent = "Cosa fa: " + next.pn_card.what;
+      what.textContent = next.pn_card.what ? "Cosa fa: " + next.pn_card.what : "Descrizione di " + next.pn_card.id + " da completare nella registrazione MegaVault.";
       pnInfo.append(what, PnCardsUI.details(next.pn_card));
     }
     if (!next.pn_card) pnInfo.textContent = "";

@@ -22,7 +22,7 @@ class PnCardsTests(unittest.TestCase):
         with sqlite3.connect(self.root / 'megavault.sqlite') as c:
             c.executescript('CREATE TABLE prompt_codex(id INTEGER,updated_at TEXT); CREATE TABLE projects(project_id INTEGER,name TEXT); INSERT INTO prompt_codex VALUES(5,"2026-10-11T12:00:00Z"); INSERT INTO projects VALUES(99,"CCS");')
         body = 'Obiettivo verificato'
-        self.record = {'prompt_id':'P5','title':'Titolo canonico','prompt_body':body,'prompt_sha256':hashlib.sha256(body.encode()).hexdigest(),'verification':{'VALID':True},'updated_at':'2026-10-11T12:00:00Z','project_id':99,'status':'launched','chat_ids':['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222'],'chatgpt_source_url':'https://chatgpt.com/c/example'}
+        self.record = {'prompt_id':'P5','title':'Titolo canonico','prompt_body':body,'prompt_sha256':hashlib.sha256(body.encode()).hexdigest(),'human_description':'Controlla il lavoro previsto dal prompt senza modificare i dati.', 'description_metadata':{'source':'chatgpt_web','created_at':'2026-10-11T12:00:00Z'},'verification':{'VALID':True},'updated_at':'2026-10-11T12:00:00Z','project_id':99,'status':'launched','chat_ids':['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222'],'chatgpt_source_url':'https://chatgpt.com/c/example'}
         self.context = {'id':'ctx','note':'P5 aumentare spazio\nNota originale','updated_at':time.time()}
 
     def source(self):
@@ -42,7 +42,8 @@ class PnCardsTests(unittest.TestCase):
             p=result['pn_card']
             self.assertEqual(p['status'],'sconosciuto')
             self.assertEqual(p['title'],'Titolo canonico')
-            self.assertEqual(p['what'],'non disponibile')
+            self.assertEqual(p['what'],self.record['human_description'])
+            self.assertEqual(p['what_source'],'Descrizione canonica MegaVault')
             self.assertEqual(p['registry_status'],'launched')
             self.assertEqual(len(p['links']),3)
             self.assertEqual(result['note'],self.context['note'])
@@ -86,6 +87,24 @@ class PnCardsTests(unittest.TestCase):
         self.assertEqual(first['links'],second['links'])
         self.assertEqual(second['id'],'P6')
         self.assertEqual(second['status'],'sconosciuto')
+
+    def test_upgrades_old_cache_and_preserves_canonical_description_offline(self):
+        with self.source(): self.cards.enrich(self.context)
+        cached=self.store.get_meta('pn-card-cache:P5')
+        del cached['record']['human_description']
+        self.store.set_meta('pn-card-cache:P5',cached)
+        fresh=PnCards(self.store,root=self.root)
+        with self.source() as call:
+            self.assertEqual(fresh.enrich(self.context)['pn_card']['what'],self.record['human_description'])
+            self.assertEqual(call.call_count,1)
+        self.root.joinpath('megavault.sqlite').unlink()
+        offline=PnCards(self.store,root=self.root).enrich(self.context)['pn_card']
+        self.assertEqual(offline['what'],self.record['human_description'])
+        self.assertTrue(offline['metadata_stale'])
+        # A title/note can never substitute for an authored prompt description.
+        missing=PnCards(self.store,root=self.root).enrich({'note':'P999 titolo inventato','title':'Titolo'})['pn_card']
+        self.assertIsNone(missing['what'])
+        self.assertNotEqual(missing['what'],'non disponibile')
 
     def test_normalized_note_is_ready_without_rewriting(self):
         with self.source():
