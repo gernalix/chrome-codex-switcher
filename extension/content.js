@@ -12,7 +12,7 @@
   shadow.innerHTML = `
     <style>
       *{box-sizing:border-box} .box{width:100%;height:100%;min-width:230px;min-height:105px;resize:both;overflow:auto;background:#17181b;color:#f2f2f2;border:1px solid #4b4d55;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.36);font:13px/1.35 system-ui,sans-serif;display:flex;flex-direction:column}
-      .head{display:flex;align-items:center;gap:6px;padding:7px 8px;background:#23252a;cursor:move;user-select:none;border-radius:9px 9px 0 0}.title{font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.status{font-size:11px;color:#aaa}.btn{appearance:none;border:0;border-radius:6px;background:#33363d;color:#eee;padding:4px 7px;cursor:pointer;font:inherit}.btn:hover{background:#464a53}.icon{padding:3px 6px}.body{display:flex;flex:1;min-height:0;flex-direction:column;padding:7px;gap:7px}.note{width:100%;height:100%;min-height:52px;flex:1;resize:none;border:1px solid #3e4148;border-radius:7px;background:#101114;color:#f4f4f4;padding:7px;font:13px/1.4 system-ui,sans-serif;outline:none}.note:focus{border-color:#777b87}.actions{display:flex;gap:6px;align-items:center}.mode{display:flex;align-items:center;gap:6px;font-size:11px;color:#c6c8ce;user-select:none}.mode input{margin:0}.hint{font-size:11px;color:#aeb1b8;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.collapsed .body{display:none}.collapsed{min-height:38px!important;height:38px!important;resize:none}.flash{position:absolute;left:8px;right:8px;bottom:8px;padding:6px 8px;border-radius:6px;background:#363941;color:#fff;opacity:0;pointer-events:none;transition:opacity .15s}.flash.show{opacity:1}
+      .head{display:flex;align-items:center;gap:6px;padding:7px 8px;background:#23252a;cursor:move;user-select:none;border-radius:9px 9px 0 0}.title{font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.status{font-size:11px;color:#aaa}.btn{appearance:none;border:0;border-radius:6px;background:#33363d;color:#eee;padding:4px 7px;cursor:pointer;font:inherit}.btn:hover{background:#464a53}.icon{padding:3px 6px}.body{display:flex;flex:1;min-height:0;flex-direction:column;padding:7px;gap:7px}.note{width:100%;height:100%;min-height:52px;flex:1;resize:none;border:1px solid #3e4148;border-radius:7px;background:#101114;color:#f4f4f4;padding:7px;font:13px/1.4 system-ui,sans-serif;outline:none}.note:focus{border-color:#777b87}.actions{display:flex;gap:6px;align-items:center}.mode{display:flex;align-items:center;gap:6px;font-size:11px;color:#c6c8ce;user-select:none}.mode input{margin:0}.hint{font-size:11px;color:#aeb1b8;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.collapsed .body{display:none}.collapsed{min-height:38px!important;height:38px!important;resize:none}.flash{position:absolute;left:8px;right:8px;bottom:8px;padding:6px 8px;border-radius:6px;background:#363941;color:#fff;opacity:0;pointer-events:none;transition:opacity .15s}.flash.show{opacity:1}.pn-info{max-height:130px;overflow:auto;font-size:11px;border-left:3px solid #6a8ee8;padding-left:6px;overflow-wrap:anywhere}.pn-info a{color:#a9c2ff;margin-right:8px}.pn-info summary{cursor:pointer}.pn-info button,.pn-info textarea{max-width:100%}.pn-info p{margin:5px 0}.status{max-width:85px;overflow-wrap:anywhere}
     </style>
     <div class="box">
       <div class="head">
@@ -21,6 +21,7 @@
         <button class="btn icon close" title="Hide">×</button>
       </div>
       <div class="body">
+        <div class="pn-info" hidden></div>
         <textarea class="note" placeholder="What is this tab for?"></textarea>
         <label class="mode"><input class="independent" type="checkbox"> Separate Chrome/Codex notes</label>
         <div class="actions">
@@ -36,6 +37,7 @@
   const title = shadow.querySelector(".title");
   const status = shadow.querySelector(".status");
   const note = shadow.querySelector(".note");
+  const pnInfo = shadow.querySelector(".pn-info");
   const independent = shadow.querySelector(".independent");
   const hint = shadow.querySelector(".hint");
   const flashEl = shadow.querySelector(".flash");
@@ -372,10 +374,18 @@
       clearTimeout(promptIdFlushTimer);
       if (promptIdObserver) queueMicrotask(scanFullPageForPromptIds);
     }
-    title.textContent = next.title || document.title || "Context Twin";
+    title.textContent = next.pn_card ? next.pn_card.id + " · " + next.pn_card.title : next.title || document.title || "Context Twin";
+    pnInfo.hidden = !next.pn_card;
+    if (next.pn_card && (contextChanged || !pnInfo.querySelector("details[open]"))) {
+      pnInfo.textContent = "";
+      const what = document.createElement("div");
+      what.textContent = "Cosa fa: " + next.pn_card.what;
+      pnInfo.append(what, PnCardsUI.details(next.pn_card));
+    }
+    if (!next.pn_card) pnInfo.textContent = "";
     if (shadow.activeElement !== note) note.value = next.note || "";
     independent.checked = !!next.notes_independent;
-    status.textContent = next.twin ? "linked" : "unlinked";
+    status.textContent = next.pn_card ? next.pn_card.status : next.twin ? "linked" : "unlinked";
     hint.textContent = next.twin ? next.twin.codex_thread : "";
     box.classList.toggle("collapsed", !!next.collapsed);
     host.style.display = next.hidden ? "none" : "block";

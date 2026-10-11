@@ -41,28 +41,18 @@ class GnomeOverlayContractTests(unittest.TestCase):
         self.assertIn("CODEX_DESKTOP_WM_CLASSES", SOURCE)
         self.assertNotIn(".test(identity)", body)
 
-    def test_overlay_hides_outside_chatgpt_desktop(self) -> None:
-        self.assertIn("if (!isChatGptDesktopWindow(win)) {", SOURCE)
-        self.assertIn("this._box.hide();", SOURCE)
-        self.assertNotIn("function isCodexWindow", SOURCE)
+    def test_desktop_overlay_is_removed(self) -> None:
+        for needle in ('Main.uiGroup.add_child', 'new St.BoxLayout', 'new St.Entry', 'overlay.json', '_placeOverlay', '_applyOverlayState'):
+            self.assertNotIn(needle, SOURCE)
+        self.assertIn('this._reportRuntime(null, identity.matches, false, identity)', SOURCE)
+        self.assertIn('owner-changed', SOURCE)
+        self.assertIn('_focusRequestedChrome()', SOURCE)
 
     def test_runtime_heartbeat_reports_source_version_and_focused_identity(self) -> None:
         self.assertIn("source_version", SOURCE)
         self.assertIn("focused_app_id", SOURCE)
         self.assertIn("focused_wm_class", SOURCE)
 
-    def test_overlay_has_move_resize_collapse_and_close_controls(self) -> None:
-        for needle in (
-            "_beginOverlayInteraction('move'",
-            "_beginOverlayInteraction('resize'",
-            "Clutter.EventType.MOTION",
-            "_toggleCollapsed()",
-            "_dismissOverlay()",
-            "_placeOverlay(win)",
-            "context-twin-control",
-            "context-twin-resize",
-        ):
-            self.assertIn(needle, SOURCE + STYLE)
 
 
 if __name__ == "__main__":

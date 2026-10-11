@@ -14,7 +14,7 @@ function loadRuntime(extensionPath) {
     const source = new TextDecoder().decode(bytes);
     const factory = new Function(
         'Clutter', 'GLib', 'Meta', 'Shell', 'Soup', 'St', 'Main',
-        `${source}\nreturn ChromeCodexSwitcherOverlay;`,
+        `${source}\nreturn ChromeCodexSwitcherBridge;`,
     );
     return factory(Clutter, GLib, Meta, Shell, Soup, St, Main);
 }

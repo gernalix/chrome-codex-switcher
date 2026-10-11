@@ -14,7 +14,7 @@ Fedora/Wayland workflow helper for pairing a specific Chrome tab with a specific
 - Lets the note be edited from either Chrome or Codex. By default both surfaces share one note; enable **Separate Chrome/Codex notes** to keep two independent values for the same pair.
 - Restores/focuses the right Chrome tab even with many windows/tabs; if the paired tab is closed, it reopens its URL.
 - Provides a searchable Chrome side panel for all contexts; **Alt+Shift+S** opens it with the search field focused. It searches canonical and page-detected `PROMPT_ID` values, Chrome titles, Codex chat titles, and note text. Indexed IDs can also be added or removed manually per context.
-- Ships a GNOME Shell companion that provides both the Codex floating-note overlay and a native GNOME Wayland clipboard bridge.
+- Ships a GNOME Shell companion for the native Wayland clipboard and Chrome focus bridge. Desktop chat overlays are removed.
 
 The core intentionally avoids Wayland window automation. Chrome controls its own tabs; Codex is addressed through its registered `codex://` deep links.
 
@@ -111,26 +111,32 @@ Copying a Codex deep link intentionally acts as “switch to twin” outside pai
 
 ### Search dashboard
 
-Press **Alt+Shift+S** globally from GNOME to open the context dashboard, regardless of which application currently has focus. The GNOME companion owns this system-wide shortcut and opens the localhost dashboard in Google Chrome when installed (falling back to the default browser only if Chrome cannot be resolved). The Chrome extension keeps the same shortcut as an in-Chrome fallback.
+Press **Alt+Shift+S** globally from GNOME to open the context dashboard, regardless of which application currently has focus. The GNOME Settings Daemon custom binding owns this system-wide shortcut and opens the localhost dashboard in Google Chrome. The Chrome extension keeps the same shortcut as an in-Chrome fallback.
 
 The extension bundles its GSettings schema inside its own `schemas/` directory, so a plain system-level `gsettings get org.gnome.shell.extensions.chrome-codex-switcher open-search-dashboard` may report `No such schema`. Verify the bundled schema with:
 
 ```bash
 EXT="$HOME/.local/share/gnome-shell/extensions/chrome-codex-switcher-v2@gernalix.github.com"
 GSETTINGS_SCHEMA_DIR="$EXT/schemas" gsettings get org.gnome.shell.extensions.chrome-codex-switcher open-search-dashboard
-``` Start typing immediately to filter by note text, canonical/page-detected `PROMPT_ID`, Chrome tab title, or Codex chat title. CSS performs one full-page scan and then incrementally inspects changed DOM subtrees for standalone six-digit IDs; discovered IDs remain searchable history for that context. Use **+ ID** to add an association manually or **×** on a detected/manual chip to remove it. Removing an automatically detected ID creates a persistent exclusion, so later scans do not immediately restore it. Use **↑/↓** to select a result, **Enter** to switch to its Chrome tab, or **Shift+Enter** to open its Codex twin. Mouse users can click a row for Chrome or the explicit **Chrome**/**Codex** buttons. Notes are rendered first and with stronger spacing, contrast and typography because they are the primary search/recognition field.
+```
+
+Start typing immediately to filter by note text, canonical/page-detected `PROMPT_ID`, Chrome tab title, or Codex chat title. CSS performs one full-page scan and then incrementally inspects changed DOM subtrees for standalone six-digit IDs; discovered IDs remain searchable history for that context. Use **+ ID** to add an association manually or **×** on a detected/manual chip to remove it. Removing an automatically detected ID creates a persistent exclusion, so later scans do not immediately restore it. Use **↑/↓** to select a result, **Enter** to switch to its Chrome tab, or **Shift+Enter** to open its Codex twin. Mouse users can click a row for Chrome or the explicit **Chrome**/**Codex** buttons. Notes are rendered first and with stronger spacing, contrast and typography because they are the primary search/recognition field.
 
 ### Floating note
 
-The note can be edited from both paired surfaces:
+The Chrome floating note remains editable, draggable, resizable, collapsible and hideable. Notes persist per tab-context and remain searchable. Existing shared/independent Chrome and Codex note data is preserved; no floating note is rendered on Codex or ChatGPT Desktop.
 
-- Chrome: editable textarea, draggable/resizable/collapsible/hideable;
-- Codex: editable GNOME overlay bound to the currently resolved Codex thread;
-- default mode: one shared note, so an edit on either side appears on the other;
-- optional **Separate Chrome/Codex notes** checkbox: Chrome and Codex keep independent note text for the same pair;
-- persisted per tab-context and searchable from the Chrome side panel.
+### Pn prompt cards
 
-When Codex changes conversation, the previous active-thread cache is invalidated immediately. The overlay follows an exact AT-SPI thread ID when available; if only a title is available it is accepted only when it maps to one unique learned thread. Otherwise the overlay stays hidden instead of reusing the previous chat's note.
+A Chrome note whose **first line begins** with `P[1-9][0-9]*` followed by whitespace, a separator or end of line becomes a prompt card, for example `P5 aumentare spazio`. `Piano`, `P05`, IDs on later lines and legacy six-digit IDs remain ordinary notes. The original text stays editable and is never normalized automatically.
+
+The dashboard and side panel distinguish Pn cards with a colored border, ID, title, “Cosa fa”, a Codex status chip and expandable importance/details. Filter **Tutte / Pn / Normali**, filter by Codex status, search metadata and sort by update, numeric Pn ID or status. BLOCKED/FAIL receive visual emphasis without notifications. Existing keyboard navigation, Chrome/Codex buttons and global Alt+Shift+S are preserved.
+
+MegaVault is read through its canonical `prompt show` verification (including body SHA256), with on-demand change detection and a verified projection cached in the existing CCS meta table. It is never written by this presentation. All associated canonical chat links are shown; chat UUIDs and Pn IDs stay distinct. No synthetic MegaVault URL is generated. Offline metadata is labeled obsolete; source and verification time are visible. Administrative registration (`registered`, `launched`, `cancelled`) is shown separately and **never establishes Codex PASS or any execution status**. Without a verified execution feed the status is explicitly **sconosciuto**.
+
+Use **Integra dati manualmente** to persist a plain-language summary, practical benefit, status, blocker and next step in local CCS meta, attributed to the local user with a timestamp. Unknown summaries remain **non disponibile**; status older than 24 hours is labeled obsolete. Manual fields never update MegaVault. Multiple contexts for the same Pn share these annotations. The Chrome overlay shows the same compact ID/status and expandable details above the original note.
+
+Canonical link synchronization still requires a note first line **exactly** `Pn`. An inline title does not change this contract: **Copia nota compatibile** previews/copies `Pn\nTitle\n…` for user review, preserving the stored note. Paste/save it explicitly to opt into synchronization. The existing debounced `pn-links-changed` marker remains unchanged.
 
 Use **Alt+Shift+V** to show/hide the note in the active Chrome tab.
 
@@ -191,11 +197,7 @@ The HTTP server binds only to `127.0.0.1:43817`. Mutating browser requests are a
 
 ## GNOME companion
 
-`contrib/gnome-extension@gernalix.github.com/` supports GNOME Shell 49/50. It has two jobs:
-
-- use AT-SPI to resolve the exact selected Codex/ChatGPT thread ID when the UI exposes a thread route/attribute, with a fail-closed unique-title fallback for older builds, and display only the matching paired note;
-- provide an editable Codex note plus the **Separate Chrome/Codex notes** toggle;
-- bridge copied Codex deep links to the daemon using GNOME Shell's native clipboard APIs.
+`contrib/gnome-extension@gernalix.github.com/` supports GNOME Shell 49/50. It bridges copied Codex links and Chrome focus requests; it creates no overlay actors and reads no desktop note cache. Alt+Shift+S is owned by the existing GNOME Settings Daemon custom binding configured by the installer. The obsolete companion is disabled rather than restored on installation fallback.
 
 The clipboard access is deliberate and limited to values matching `codex://threads/...`; unrelated clipboard text is ignored. On GNOME Wayland this companion is the preferred Codex → Chrome backend because GNOME does not expose the wlroots data-control protocol required by `wl-paste --watch`.
 
@@ -236,3 +238,5 @@ consumer is deployed, the daemon still stages the exact request and opens a new 
 thread, but it does not claim that UI configuration/injection succeeded. If an exact
 requested setting is unavailable, the native launcher must fail closed rather than
 silently select a fallback.
+
+Pn presentation tests: `PYTHONPATH=host python3 -m unittest discover -s tests -p 'test_pn_cards.py' -v`. GNOME actor-free runtime test: `node tests/e2e/test_gnome_bridge_runtime.cjs`. These supplement the existing note persistence E2E and regression suite. No CCS schema migration is required.

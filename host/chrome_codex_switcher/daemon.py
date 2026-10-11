@@ -22,6 +22,7 @@ from .a11y_watch import CodexA11yWatch
 from .broker import EventBroker
 from . import __version__
 from .store import Store
+from .pn_cards import PnCards
 from .util import cache_dir, canonical_url, db_path, now, overlay_path, parse_codex_link, state_dir, write_json_atomic
 from .verifier import discover_codex_session
 from .xfixes_watch import XFixesWatch
@@ -44,6 +45,7 @@ PROMPT_CODEX_DISCOVERY_AGE = 30 * 24 * 60 * 60.0
 class App:
     def __init__(self, store: Store | None = None, broker: EventBroker | None = None, open_codex=None):
         self.store = store or Store(db_path())
+        self.pn_cards = PnCards(self.store)
         self._pn_signal_lock = threading.Lock()
         self._pn_signal_timer: threading.Timer | None = None
         self.broker = broker or EventBroker(on_event=self._on_pn_relevant_event)
@@ -621,7 +623,7 @@ class App:
         context_id = str(payload["context_id"])
         url = canonical_url(str(payload.get("url", "")))
         title = str(payload.get("title", ""))
-        return self.store.upsert_context(context_id, url, title)
+        return self.pn_cards.enrich(self.store.upsert_context(context_id, url, title))
 
     def replace_context_url(self, payload: dict[str, Any]) -> dict[str, Any]:
         context_id = str(payload.get("context_id") or "").strip()
@@ -785,7 +787,7 @@ class App:
         if twin and self.store.get_meta("active_codex_thread") == twin.get("codex_thread"):
             self._write_overlay_for_thread(twin["codex_thread"], codex_title=self._active_codex_title)
         self.broker.emit("note_changed", {"context_id": context_id, "surface": surface})
-        return {"ok": True, "context": context}
+        return {"ok": True, "context": self.pn_cards.enrich(context)}
 
     def set_note_mode(self, payload: dict[str, Any]) -> dict[str, Any]:
         context_id = str(payload["context_id"])
@@ -811,7 +813,7 @@ class App:
             "note_mode_changed",
             {"context_id": context_id, "independent": bool(context.get("notes_independent"))},
         )
-        return {"ok": True, "context": context}
+        return {"ok": True, "context": self.pn_cards.enrich(context)}
 
     def set_ui(self, payload: dict[str, Any]) -> dict[str, Any]:
         context = self.store.set_ui(
@@ -927,7 +929,7 @@ class App:
 
 
 def search_dashboard_html() -> str:
-    return r"""<!doctype html>
+    page = r"""<!doctype html>
 <html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Context Search</title>
 <style>
 :root{color-scheme:light dark;font-family:system-ui,sans-serif}*{box-sizing:border-box}body{margin:0;background:Canvas;color:CanvasText}
@@ -939,20 +941,24 @@ header{position:sticky;top:0;background:Canvas;padding:18px 18px 12px;border-bot
 .prompt-chip{display:inline-flex;align-items:center;gap:4px;font:600 .78rem/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid #7776;background:#7772;border-radius:999px;padding:4px 7px}.prompt-chip.bound{font-weight:750}
 .prompt-remove,.prompt-add{padding:1px 5px;min-width:0;border-radius:999px}.prompt-remove{border:0;background:transparent}.meta{font-size:.76rem;opacity:.58;margin-top:8px;overflow-wrap:anywhere}.buttons{display:flex;gap:7px;margin-top:10px}
 button{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid #7777;background:ButtonFace;color:ButtonText;cursor:pointer}.empty{padding:32px 12px;text-align:center;opacity:.65}
-</style></head><body><header><h1>Context Search</h1><input id="q" type="search" autocomplete="off" placeholder="Cerca note, PROMPT_ID, titoli Chrome/Codex…"><div id="status">Caricamento…</div></header>
-<main id="list" role="listbox" aria-label="Chrome and Codex contexts"></main><script>
+__PN_CSS__</style></head><body><header><h1>Context Search</h1><input id="q" type="search" autocomplete="off" placeholder="Cerca note, PROMPT_ID, titoli Chrome/Codex…"><div id="status">Caricamento…</div></header>
+<main id="list" role="listbox" aria-label="Chrome and Codex contexts"></main><script>__PN_JS__</script><script>
 const q=document.querySelector('#q'),list=document.querySelector('#list'),statusEl=document.querySelector('#status');let contexts=[],visible=[],selected=0;
 const searchable=item=>[item.prompt_id,...(item.prompt_ids||[]),item.title,item.twin?.codex_title,item.note,item.codex_note].filter(Boolean).join(' ').toLowerCase();
+const controls=PnCardsUI.toolbar(document.querySelector('header'),()=>{selected=0;render()});
 const noteText=item=>[...new Set([item.note,item.codex_note].filter(Boolean))].join('\n\n');
 function select(index){if(!visible.length){selected=0;return}selected=(index+visible.length)%visible.length;[...list.querySelectorAll('.card')].forEach((el,i)=>{const on=i===selected;el.classList.toggle('selected',on);el.setAttribute('aria-selected',on?'true':'false');if(on)el.scrollIntoView({block:'nearest'})})}
 async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),data=await r.json();if(!data.ok)throw new Error(data.error||'azione fallita');return data}
 async function action(item,target){if(!item)return;const path=target==='codex'?'/api/dashboard/open-codex':'/api/dashboard/focus-chrome';statusEl.textContent=target==='codex'?'Apro Codex…':'Passo alla scheda Chrome…';try{await post(path,{context_id:item.id});statusEl.textContent=target==='codex'?'Codex aperto':'Comando inviato a Chrome';window.close();}catch(e){statusEl.textContent='Errore: '+e.message}}
 async function editPrompt(item,mode,promptId=null){let value=promptId;if(mode==='add'){value=(window.prompt('PROMPT_ID da associare (6 cifre)')||'').trim();if(!value)return;if(!/^\d{6}$/.test(value)){statusEl.textContent='PROMPT_ID non valido: servono esattamente 6 cifre';return}}try{const endpoint=mode==='add'?'/api/context/prompts/add':'/api/context/prompts/remove';await post(endpoint,{context_id:item.id,prompt_id:value});statusEl.textContent=mode==='add'?'PROMPT_ID aggiunto':'PROMPT_ID rimosso';await load()}catch(e){statusEl.textContent='Errore: '+e.message}}
 function promptRow(item){const row=document.createElement('div');row.className='prompt-ids';const canonical=String(item.prompt_id||'');if(canonical){const chip=document.createElement('span');chip.className='prompt-chip bound';chip.title='Binding canonico';chip.textContent=canonical;row.append(chip)}for(const entry of item.prompt_id_index||[]){const id=String(entry.prompt_id||'');if(!id||id===canonical)continue;const chip=document.createElement('span');chip.className='prompt-chip';chip.title=entry.manual_added?(entry.auto_detected?'Rilevato e aggiunto manualmente':'Aggiunto manualmente'):'Rilevato nella pagina';const label=document.createElement('span');label.textContent=id;const remove=document.createElement('button');remove.className='prompt-remove';remove.textContent='×';remove.title='Rimuovi associazione';remove.onclick=e=>{e.stopPropagation();editPrompt(item,'remove',id)};chip.append(label,remove);row.append(chip)}const add=document.createElement('button');add.className='prompt-add';add.textContent='+ ID';add.title='Aggiungi PROMPT_ID';add.onclick=e=>{e.stopPropagation();editPrompt(item,'add')};row.append(add);return row}
-function render(){const needle=q.value.trim().toLowerCase();visible=contexts.filter(item=>!needle||searchable(item).includes(needle));list.textContent='';if(!visible.length){selected=0;const e=document.createElement('div');e.className='empty';e.textContent='Nessun risultato';list.append(e);return}selected=Math.min(selected,visible.length-1);visible.forEach((item,index)=>{const card=document.createElement('section');card.className='card'+(index===selected?' selected':'');card.role='option';card.setAttribute('aria-selected',index===selected?'true':'false');card.onclick=()=>action(item,'chrome');card.onmouseenter=()=>select(index);const nv=noteText(item);if(nv){const note=document.createElement('div');note.className='note';note.textContent=nv;card.append(note)}const title=document.createElement('div');title.className='title';title.textContent=item.title||item.url||'Contesto Chrome senza titolo';card.append(title,promptRow(item));const meta=document.createElement('div');meta.className='meta';const bits=[];if(item.twin?.codex_title)bits.push('Codex: '+item.twin.codex_title);else if(item.twin?.codex_thread)bits.push('Codex thread: '+item.twin.codex_thread);else bits.push('Nessun Codex twin');meta.textContent=bits.join(' · ');card.append(meta);const buttons=document.createElement('div');buttons.className='buttons';const chromeBtn=document.createElement('button');chromeBtn.textContent='Chrome';chromeBtn.onclick=e=>{e.stopPropagation();action(item,'chrome')};buttons.append(chromeBtn);if(item.twin){const codexBtn=document.createElement('button');codexBtn.textContent='Codex';codexBtn.onclick=e=>{e.stopPropagation();action(item,'codex')};buttons.append(codexBtn)}card.append(buttons);list.append(card)})}
-async function load(){try{const r=await fetch('/api/list',{cache:'no-store'}),data=await r.json();contexts=data.contexts||[];statusEl.textContent=contexts.length+' contesti';render()}catch(e){statusEl.textContent='Daemon non raggiungibile: '+e.message}}
+function render(){const needle=q.value.trim().toLowerCase();visible=PnCardsUI.rows(contexts,needle,controls,searchable);list.textContent='';if(!visible.length){selected=0;const e=document.createElement('div');e.className='empty';e.textContent='Nessun risultato';list.append(e);return}selected=Math.min(selected,visible.length-1);visible.forEach((item,index)=>{const card=document.createElement('section');card.className='card'+(index===selected?' selected':'');card.role='option';card.setAttribute('aria-selected',index===selected?'true':'false');card.onclick=()=>action(item,'chrome');card.onmouseenter=()=>select(index);PnCardsUI.card(card,item,async values=>{await post('/api/pn/manual',values);await load(true)},async note=>{await post('/api/note',{context_id:item.id,note});await load(true)});const nv=noteText(item);if(nv&&!item.pn_card){const note=document.createElement('div');note.className='note';note.textContent=nv;card.append(note)}const title=document.createElement('div');title.className='title';title.textContent=item.title||item.url||'Contesto Chrome senza titolo';card.append(title,promptRow(item));const meta=document.createElement('div');meta.className='meta';const bits=[];if(item.twin?.codex_title)bits.push('Codex: '+item.twin.codex_title);else if(item.twin?.codex_thread)bits.push('Codex thread: '+item.twin.codex_thread);else bits.push('Nessun Codex twin');meta.textContent=bits.join(' · ');card.append(meta);const buttons=document.createElement('div');buttons.className='buttons';const chromeBtn=document.createElement('button');chromeBtn.textContent='Chrome';chromeBtn.onclick=e=>{e.stopPropagation();action(item,'chrome')};buttons.append(chromeBtn);if(item.twin){const codexBtn=document.createElement('button');codexBtn.textContent='Codex';codexBtn.onclick=e=>{e.stopPropagation();action(item,'codex')};buttons.append(codexBtn)}card.append(buttons);list.append(card)})}
+async function load(force=false){try{const r=await fetch('/api/list',{cache:'no-store'}),data=await r.json();contexts=data.contexts||[];statusEl.textContent=contexts.length+' contesti';if(force||(!list.querySelector('details[open]')&&!list.contains(document.activeElement)))render()}catch(e){statusEl.textContent='Daemon non raggiungibile: '+e.message}}
 q.addEventListener('input',()=>{selected=0;render()});q.addEventListener('keydown',e=>{if(e.key==='ArrowDown'){e.preventDefault();select(selected+1)}else if(e.key==='ArrowUp'){e.preventDefault();select(selected-1)}else if(e.key==='Enter'){e.preventDefault();action(visible[selected]||visible[0],e.shiftKey?'codex':'chrome')}else if(e.key==='Escape'&&q.value){e.preventDefault();q.value='';selected=0;render()}});
 q.focus();load();setInterval(load,5000);</script></body></html>"""
+
+    extension = Path(__file__).resolve().parents[2] / "extension"
+    return page.replace("__PN_CSS__", (extension / "pn-cards.css").read_text()).replace("__PN_JS__", (extension / "pn-cards.js").read_text())
 
 PROMPT_UI_ACTIONS = {
     "copy": "Copia prompt",
@@ -1132,9 +1138,9 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/context":
                 context_id = query.get("context_id", [""])[0]
                 context = APP.store.get_context(context_id)
-                self._json(HTTPStatus.OK, {"ok": bool(context), "context": context})
+                self._json(HTTPStatus.OK, {"ok": bool(context), "context": APP.pn_cards.enrich(context)})
             elif parsed.path == "/api/list":
-                self._json(HTTPStatus.OK, {"ok": True, "contexts": APP.store.list_contexts()})
+                self._json(HTTPStatus.OK, {"ok": True, "contexts": [APP.pn_cards.enrich(c) for c in APP.store.list_contexts()]})
             elif parsed.path == "/api/prompt":
                 prompt_id = query.get("prompt_id", [""])[0]
                 self._json(HTTPStatus.OK, APP.prompt_binding(prompt_id))
@@ -1178,6 +1184,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"ok": True, "context": APP.upsert_context(payload)})
             elif parsed.path == "/api/context/replace-url":
                 self._json(HTTPStatus.OK, APP.replace_context_url(payload))
+            elif parsed.path == "/api/pn/manual":
+                self._json(HTTPStatus.OK, APP.pn_cards.update_manual(payload.get("prompt_id"), payload))
             elif parsed.path == "/api/note":
                 self._json(HTTPStatus.OK, APP.set_note(payload))
             elif parsed.path == "/api/note-mode":

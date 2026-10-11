@@ -44,7 +44,7 @@ class InstallContractTests(unittest.TestCase):
         self.assertIn('UUID="chrome-codex-switcher-v2@gernalix.github.com"', installer)
         self.assertIn('LEGACY_UUID="chrome-codex-switcher@gernalix.github.com"', installer)
         self.assertIn('gnome-extensions disable "$LEGACY_UUID"', installer)
-        self.assertIn('gnome-extensions enable "$LEGACY_UUID"', installer)
+        self.assertNotIn('gnome-extensions enable "$LEGACY_UUID"', installer)
         self.assertLess(
             installer.index('grep -Fxq "$UUID"'),
             installer.index('gnome-extensions disable "$LEGACY_UUID"'),

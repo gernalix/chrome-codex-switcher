@@ -22,20 +22,21 @@ if [[ -d "$DEST/schemas" ]]; then
     exit 1
   fi
 fi
-echo "Installed GNOME companion (overlay + clipboard bridge + global search shortcut) to: $DEST"
+echo "Installed GNOME companion (clipboard and focus bridge; desktop overlays removed) to: $DEST"
 
 if command -v gnome-extensions >/dev/null; then
   gnome-extensions enable "$UUID" 2>/dev/null || true
   if gnome-extensions list --enabled 2>/dev/null | grep -Fxq "$UUID"; then
     gnome-extensions disable "$LEGACY_UUID" 2>/dev/null || true
   else
-    gnome-extensions enable "$LEGACY_UUID" 2>/dev/null || true
+    # Never restore the old desktop overlay after a bridge-only deployment.
+    gnome-extensions disable "$LEGACY_UUID" 2>/dev/null || true
   fi
   if gnome-extensions list --enabled 2>/dev/null | grep -Fxq "$UUID"; then
     echo "GNOME companion: enabled"
   else
     echo "GNOME companion v2: installed but pending the next GNOME session."
-    echo "The legacy companion was kept enabled; after log out/in, rerun ./install.sh."
+    echo "Desktop overlays are disabled; after log out/in, rerun ./install.sh."
   fi
 else
   echo "WARNING: gnome-extensions command not found; enable $UUID after installation."

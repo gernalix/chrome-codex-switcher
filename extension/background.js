@@ -42,7 +42,7 @@ async function recoverEligibleTabs({refreshExisting = false} = {}) {
       });
       await chrome.scripting.executeScript({
         target: {tabId: tab.id},
-        files: ["content.js"]
+        files: ["pn-cards.js", "content.js"]
       });
     }));
 }
@@ -705,6 +705,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.type === "context:get") {
         const tab = sender.tab || await currentTab();
         sendResponse({ok: true, context: await ensureContext(tab)});
+      } else if (message.type === "pn:manual") {
+        sendResponse(await api("/api/pn/manual", {method: "POST", body: message.values}));
       } else if (message.type === "context:note") {
         sendResponse(await api("/api/note", {method: "POST", body: {
           context_id: message.contextId,

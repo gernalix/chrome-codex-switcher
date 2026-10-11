@@ -62,6 +62,7 @@
         "https://*/*"
       ],
       "js": [
+        "pn-cards.js",
         "content.js"
       ],
       "run_at": "document_idle",
