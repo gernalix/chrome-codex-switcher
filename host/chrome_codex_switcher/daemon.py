@@ -22,7 +22,7 @@ from .a11y_watch import CodexA11yWatch
 from .broker import EventBroker
 from . import __version__
 from .store import Store
-from .util import cache_dir, canonical_url, db_path, now, overlay_path, parse_codex_link, write_json_atomic
+from .util import cache_dir, canonical_url, db_path, now, overlay_path, parse_codex_link, state_dir, write_json_atomic
 from .verifier import discover_codex_session
 from .xfixes_watch import XFixesWatch
 
@@ -44,7 +44,9 @@ PROMPT_CODEX_DISCOVERY_AGE = 30 * 24 * 60 * 60.0
 class App:
     def __init__(self, store: Store | None = None, broker: EventBroker | None = None, open_codex=None):
         self.store = store or Store(db_path())
-        self.broker = broker or EventBroker()
+        self._pn_signal_lock = threading.Lock()
+        self._pn_signal_timer: threading.Timer | None = None
+        self.broker = broker or EventBroker(on_event=self._on_pn_relevant_event)
         self._open_codex = open_codex or self._default_open_codex
         self._clipboard_process: subprocess.Popen | None = None
         self._xfixes_watch: XFixesWatch | None = None
@@ -68,6 +70,38 @@ class App:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+
+    def _on_pn_relevant_event(self, event_type: str) -> None:
+        # Only the production CCS store owns the marker; test/alternate stores
+        # must never signal the real MegaVault reconciler.
+        if self.store.path.resolve() != (state_dir() / "state.sqlite3").resolve():
+            return
+        if event_type not in {
+            "note_changed", "note_mode_changed", "linked",
+            "prompt_linked", "prompt_bound", "context_url_replaced",
+        }:
+            return
+        with self._pn_signal_lock:
+            if self._pn_signal_timer is not None:
+                self._pn_signal_timer.cancel()
+            timer = threading.Timer(1.0, self._write_pn_signal_marker)
+            timer.daemon = True
+            self._pn_signal_timer = timer
+            timer.start()
+
+    @staticmethod
+    def _write_pn_signal_marker() -> None:
+        # Deliberately not a metadata database or queue: a coalesced wake-up
+        # hint. MegaVault's periodic reconcile covers missed/crashed signals.
+        marker = state_dir() / "pn-links-changed"
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC | os.O_NOFOLLOW
+            fd = os.open(marker, flags, 0o600)
+            with os.fdopen(fd, "w", encoding="ascii") as stream:
+                stream.write(str(time.time_ns()))
+        except OSError as exc:
+            print(f"CCS Pn sync signal failed: {type(exc).__name__}", file=sys.stderr)
 
     def start_clipboard_watch(self) -> None:
         if os.environ.get("CCS_DISABLE_CLIPBOARD_WATCH") == "1":

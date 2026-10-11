@@ -32,6 +32,16 @@ Chrome extension <---------------- HTTP/event polling 127.0.0.1 ----------------
 
 The loopback HTTP bridge is deliberate: Chrome Flatpak can make local network requests, while classic Native Messaging is fragile in sandboxed Chrome installs.
 
+## MegaVault Pn link wake-up
+
+When the first line of a Chrome floating note is `Pn` (for example `P6`),
+MegaVault reads that CCS context's ChatGPT URL and its paired Codex deep link
+from CCS SQLite. CCS never writes into MegaVault. Once a note/pairing changes,
+the daemon coalesces related events for one second and writes a tiny
+`~/.local/state/chrome-codex-switcher/pn-links-changed` wake-up marker.
+MegaVault's user systemd path unit watches only that marker, not the busy
+SQLite WAL; its five-minute timer reconciles missed wake-ups.
+
 ## Install on Fedora
 
 On GNOME Wayland no compositor change and no data-control protocol are required. The installer deploys the GNOME companion automatically when GNOME is detected. On other Wayland compositors, `wl-clipboard` remains the fallback:
