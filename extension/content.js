@@ -12,38 +12,25 @@
   shadow.innerHTML = `
     <style>
       *{box-sizing:border-box}[hidden]{display:none!important}
-      .box{width:100%;height:100%;min-width:min(230px,100vw);min-height:min(var(--content-height,105px),var(--available-height,100vh));max-width:100vw;max-height:var(--available-height,100vh);resize:both;overflow:hidden;background:#17181b;color:#f2f2f2;border:1px solid #4b4d55;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.36);font:13px/1.35 system-ui,sans-serif;display:flex;flex-direction:column}
-      .head{display:flex;align-items:center;gap:3px;padding:2px 4px;background:#23252a;cursor:move;user-select:none;flex-shrink:0}.grip{flex:1;color:#aeb1b8}.status{font-size:11px;color:#aaa;max-width:85px;overflow-wrap:anywhere}
-      .btn{appearance:none;border:0;border-radius:5px;background:#33363d;color:#eee;min-width:28px;min-height:28px;padding:2px 5px;cursor:pointer;font:inherit}.btn:hover{background:#464a53}.btn:focus-visible,summary:focus-visible{outline:2px solid #a9c2ff;outline-offset:-2px}
-      .body{display:flex;flex:1;min-height:0;flex-direction:column;padding:4px;gap:4px;overflow:auto}.note{width:100%;min-height:58px;flex:1 0 58px;resize:none;border:1px solid #3e4148;border-radius:5px;background:#101114;color:#f4f4f4;padding:5px;font:13px/1.4 system-ui,sans-serif;outline:none}.note:focus{border-color:#777b87}
-      .actions{display:flex;gap:4px;align-items:center;padding:0 4px 4px;flex-shrink:0}.hint{font-size:11px;color:#aeb1b8;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.collapsed .body,.collapsed .actions{display:none}.collapsed{min-height:32px!important;height:32px!important;resize:none}
-      .flash{position:absolute;left:4px;right:4px;bottom:4px;padding:6px;border-radius:5px;background:#363941;color:#fff;opacity:0;pointer-events:none;transition:opacity .15s}.flash.show{opacity:1}.pn-info{flex-shrink:0;font-size:12px;border-left:2px solid #6a8ee8;padding-left:5px;overflow-wrap:anywhere}.pn-info a{color:#a9c2ff;margin-right:6px}.pn-info summary{cursor:pointer}.pn-info button,.pn-info textarea{max-width:100%}.pn-info p{margin:4px 0}
-
+      .box{width:100%;height:100%;min-width:min(230px,100vw);min-height:min(100px,var(--available-height,100vh));max-width:100vw;max-height:var(--available-height,100vh);resize:both;overflow:hidden;background:#17181b;color:#f2f2f2;border:1px solid #4b4d55;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.36);font:13px/1.35 system-ui,sans-serif;display:flex;flex-direction:column}
+      .head{display:flex;justify-content:flex-end;align-items:center;gap:3px;padding:2px 4px;background:#23252a;cursor:move;user-select:none;flex-shrink:0}
+      .btn{appearance:none;border:0;border-radius:5px;background:#33363d;color:#eee;min-width:28px;min-height:28px;padding:2px 5px;cursor:pointer;font:inherit}.btn:hover{background:#464a53}.btn:focus-visible{outline:2px solid #a9c2ff;outline-offset:-2px}
+      .body{display:flex;flex:1;min-height:0;padding:4px}.note{width:100%;min-height:58px;flex:1;resize:none;border:1px solid #3e4148;border-radius:5px;background:#101114;color:#f4f4f4;padding:5px;font:13px/1.4 system-ui,sans-serif;outline:none}.note:focus{border-color:#777b87}
+      .flash{position:absolute;left:4px;right:4px;bottom:4px;padding:6px;border-radius:5px;background:#363941;color:#fff;opacity:0;pointer-events:none;transition:opacity .15s}.flash.show{opacity:1}
     </style>
     <div class="box">
       <div class="head">
-        <span class="grip" aria-hidden="true">⠿</span><div class="status"></div>
-        <button class="btn icon collapse" title="Minimizza o espandi nota" aria-label="Minimizza o espandi nota">−</button>
-        <button class="btn icon close" title="Nascondi nota" aria-label="Nascondi nota">×</button>
+        <button class="btn link" title="Collega chat Codex" aria-label="Collega chat Codex">❓</button>
+        <button class="btn switch" hidden title="Apri chat Codex collegata" aria-label="Apri chat Codex collegata">🔗</button>
+        <button class="btn unlink" hidden title="Scollega Codex conservando le note" aria-label="Scollega Codex conservando le note">🗑</button>
+        <button class="btn close" title="Nascondi nota" aria-label="Nascondi nota">❌</button>
       </div>
-      <div class="body">
-        <div class="pn-info" hidden></div>
-        <textarea class="note" aria-label="Nota Chrome" placeholder="What is this tab for?"></textarea>
-      </div>
-        <div class="actions">
-          <button class="btn link" title="Collega chat Codex" aria-label="Collega chat Codex">❓</button>
-          <button class="btn switch" hidden title="Apri chat Codex collegata" aria-label="Apri chat Codex collegata">🔗</button>
-          <button class="btn unlink" hidden title="Scollega Codex conservando le note" aria-label="Scollega Codex conservando le note">🗑</button>
-          <div class="hint"></div>
-        </div>
+      <div class="body"><textarea class="note" aria-label="Nota Chrome"></textarea></div>
       <div class="flash" role="status" aria-live="polite"></div>
     </div>`;
 
   const box = shadow.querySelector(".box");
-  const status = shadow.querySelector(".status");
   const note = shadow.querySelector(".note");
-  const pnInfo = shadow.querySelector(".pn-info");
-  const hint = shadow.querySelector(".hint");
   const flashEl = shadow.querySelector(".flash");
   let context = null;
   let noteTimer = null;
@@ -380,26 +367,14 @@
       clearTimeout(promptIdFlushTimer);
       if (promptIdObserver) queueMicrotask(scanFullPageForPromptIds);
     }
-    pnInfo.hidden = !next.pn_card;
-    if (next.pn_card && (contextChanged || !pnInfo.querySelector("details[open]"))) {
-      pnInfo.textContent = "";
-      const what = document.createElement("div");
-      what.textContent = next.pn_card.what ? "Cosa fa: " + next.pn_card.what : "Descrizione di " + next.pn_card.id + " da completare nella registrazione MegaVault.";
-      pnInfo.append(what, PnCardsUI.details(next.pn_card));
-    }
-    if (next.pn_card && pnInfo.firstElementChild) {
-      pnInfo.firstElementChild.textContent = next.pn_card.what ? "Cosa fa: " + next.pn_card.what
-        : "Descrizione di " + next.pn_card.id + " da completare nella registrazione MegaVault.";
-    }
-    if (!next.pn_card) pnInfo.textContent = "";
-    if (shadow.activeElement !== note) note.value = next.note || "";
+    if (contextChanged || shadow.activeElement !== note) note.value = next.note || "";
     const linked = !!next.twin?.codex_thread;
     shadow.querySelector(".link").hidden = linked;
     shadow.querySelector(".switch").hidden = !linked;
     shadow.querySelector(".unlink").hidden = !linked;
-    status.textContent = next.pn_card ? next.pn_card.status : next.twin ? "linked" : "unlinked";
-    hint.textContent = next.twin ? next.twin.codex_thread : "";
-    box.classList.toggle("collapsed", !!next.collapsed);
+    // Old collapsed preferences remain stored, but no longer hide the editor.
+    host.dataset.contextId = next.id;
+    host.dataset.overlayUi = "minimal-v1";
     host.style.display = next.hidden ? "none" : "block";
     const g = next.geometry || {};
     if (Number.isFinite(g.x)) host.style.left = `${Math.max(0, g.x)}px`;
@@ -421,13 +396,9 @@
     host.style.top = `${y}px`;
     const available = Math.max(0, innerHeight - y - 4);
     host.style.setProperty("--available-height", `${available}px`);
-    const natural = (pnInfo.hidden ? 0 : pnInfo.scrollHeight + 4) + 58
-      + shadow.querySelector(".head").offsetHeight + shadow.querySelector(".actions").offsetHeight + 10;
-    host.style.setProperty("--content-height", `${natural}px`);
-    host.style.height = `${Math.min(available, Math.max(context.geometry?.height || 160, parseFloat(host.style.height) || 160, natural))}px`;
+    host.style.height = `${Math.min(available, Math.max(100, context.geometry?.height || 160, parseFloat(host.style.height) || 160))}px`;
   }
 
-  pnInfo.addEventListener("toggle", fitContent, true);
   window.addEventListener("resize", fitContent);
 
   const REFRESH_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 3000, 5000, 5000];
@@ -449,7 +420,6 @@
       installPromptIdScanner();
       return true;
     }
-    status.textContent = "daemon offline";
     scheduleRefreshRetry();
     return false;
   }
@@ -457,10 +427,12 @@
   note.addEventListener("input", () => {
     if (!context) return;
     clearTimeout(noteTimer);
+    const contextId = context.id;
+    const value = note.value;
     noteTimer = setTimeout(() => send({
       type: "context:note",
-      contextId: context.id,
-      note: note.value,
+      contextId,
+      note: value,
       surface: "chrome"
     }), 220);
   });
@@ -508,12 +480,6 @@
     saveUi({hidden: true}, savedGeometry);
   });
 
-  shadow.querySelector(".collapse").addEventListener("click", () => {
-    const collapsed = !box.classList.contains("collapsed");
-    box.classList.toggle("collapsed", collapsed);
-    saveUi({collapsed});
-  });
-
   let drag = null;
   shadow.querySelector(".head").addEventListener("pointerdown", event => {
     if (event.target.closest("button")) return;
@@ -536,11 +502,9 @@
 
   new ResizeObserver(() => {
     if (!context || host.style.display === "none") return;
-    if (!box.classList.contains("collapsed")) {
-      const rect = box.getBoundingClientRect();
-      host.style.width = `${rect.width}px`;
-      host.style.height = `${rect.height}px`;
-    }
+    const rect = box.getBoundingClientRect();
+    host.style.width = `${rect.width}px`;
+    host.style.height = `${rect.height}px`;
     saveUi();
   }).observe(box);
 
@@ -558,6 +522,7 @@
       sendResponse({
         ok: true,
         context_id: context?.id || null,
+        overlay_ui: host.dataset.overlayUi || null,
         note: note.value,
         notes_independent: !!context?.notes_independent,
         visible: host.style.display !== "none",
@@ -682,10 +647,8 @@
 
   refresh().then(ok => {
     if (ok) return;
-    status.textContent = "daemon offline";
     flash("Start chrome-codex-switcher.service", 3500);
   }).catch(() => {
-    status.textContent = "daemon offline";
     scheduleRefreshRetry();
     flash("Start chrome-codex-switcher.service", 3500);
   });

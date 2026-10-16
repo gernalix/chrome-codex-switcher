@@ -16,8 +16,8 @@ window.chrome = {runtime: {
     fixtureMessages.push(message);
     let response = {ok: true};
     if (message.type === 'context:get' || message.type === 'context:read') response.context = structuredClone(fixtureContext);
-    if (message.type === 'context:ui') Object.assign(fixtureContext, message.ui);
-    if (message.type === 'context:note') fixtureContext.note = message.note;
+    if (message.type === 'context:ui' && message.contextId === fixtureContext.id) Object.assign(fixtureContext, message.ui);
+    if (message.type === 'context:note' && message.contextId === fixtureContext.id) fixtureContext.note = message.note;
     if (message.type === 'side:unlink') {
       if (fixtureFailUnlink) response = {ok: false, error: 'fixture offline'};
       else fixtureContext.twin = null;

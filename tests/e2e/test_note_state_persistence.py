@@ -15,6 +15,8 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from selenium import webdriver
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
@@ -163,7 +165,7 @@ class NoteStatePersistenceE2E(unittest.TestCase):
                 """
                 const host = document.querySelector("#chrome-codex-switcher-host");
                 const root = host?.shadowRoot;
-                return !!root?.querySelector(".note") && !!root.querySelector(".status")?.textContent;
+                return !!root?.querySelector(".note") && !!host.dataset.contextId;
                 """
             )
         )
@@ -220,7 +222,7 @@ class NoteStatePersistenceE2E(unittest.TestCase):
             "y": 93,
             "width": 421,
             "height": 263,
-            "collapsed": True,
+            "collapsed": False,
             "hidden": True,
         }
         self.driver.execute_script(
@@ -256,10 +258,6 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         else:
             self.fail(f"note debounce did not persist {note_text!r}: {row!r}")
         # The ResizeObserver persists geometry through the normal content-script path.
-        self.driver.execute_script(
-            'document.querySelector("#chrome-codex-switcher-host").shadowRoot.querySelector(".collapse").click()'
-        )
-        time.sleep(0.35)
         self.driver.execute_script(
             'document.querySelector("#chrome-codex-switcher-host").shadowRoot.querySelector(".close").click()'
         )
@@ -537,64 +535,101 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         })["context"]
         self.assertEqual(merged["note"], repeated["note"])
 
-    def test_overlay_compact_layout_and_pairing_controls(self) -> None:
-        self.driver.get(self._url("compact-fixture", "layout"))
+    def test_overlay_minimal_layout_and_pairing_controls(self) -> None:
+        self.driver.get(self._url("minimal-fixture", "layout"))
         self._wait_extension()
         self.driver.execute_script("document.getElementById('chrome-codex-switcher-host').remove()")
-        for name in ("tests/e2e/overlay_fixture.js", "extension/pn-cards.js", "extension/content.js"):
+        for name in ("tests/e2e/overlay_fixture.js", "extension/content.js"):
             self.driver.execute_script((ROOT / name).read_text())
         root = "document.getElementById('chrome-codex-switcher-host').shadowRoot"
         def layout():
             return self.driver.execute_script("""
                 const host=document.getElementById('chrome-codex-switcher-host'),r=host.shadowRoot;
-                const b=r.querySelector('.body'),p=r.querySelector('.pn-info'),a=r.querySelector('.actions');
-                return {scroll:b.scrollHeight>b.clientHeight+1,pnHeight:p.offsetHeight,
-                  complete:p.textContent.includes(fixtureContext.pn_card.what),
+                const h=r.querySelector('.head'),n=r.querySelector('.note');
+                const buttons=[...r.querySelectorAll('button')].filter(b=>!b.hidden);
+                return {controls:buttons.map(b=>b.textContent),
+                  allInHeader:buttons.every(b=>b.parentElement===h),
+                  accessible:buttons.every(b=>b.title&&b.getAttribute('aria-label')&&b.tabIndex===0&&b.offsetWidth>=28&&b.offsetHeight>=28),
+                  forbidden:!!r.querySelector('.pn-info,.title,.status,.hint,.grip,.collapse,.independent,.actions,a,details'),
+                  extraText:[...r.querySelector('.box').childNodes].filter(n=>n.nodeType===3).some(n=>n.textContent.trim()),
+                  headerText:h.innerText.trim().replace(/\\s+/g,' '),
+                  emptySpace:buttons[0].getBoundingClientRect().left-h.getBoundingClientRect().left,
+                  placeholder:n.getAttribute('placeholder'),note:n.value,visible:host.style.display!=='none',
                   bottom:host.getBoundingClientRect().bottom,viewport:innerHeight,
-                  controls:[...r.querySelectorAll('.actions button')].filter(b=>!b.hidden).map(b=>b.textContent),
-                  title:!!r.querySelector('.title'),mode:!!r.querySelector('.independent'),
-                  details:r.querySelector('details').open,actionsVisible:a.getBoundingClientRect().bottom<=innerHeight,
-                  note:r.querySelector('.note').value};
+                  editorVisible:n.getBoundingClientRect().height>=58};
             """)
-        self.wait.until(lambda _: layout()["complete"])
-        self.assertEqual(["❓"], layout()["controls"])
-        self.assertFalse(layout()["title"])
-        self.assertFalse(layout()["mode"])
-        self.assertFalse(layout()["details"])
-        self.assertFalse(layout()["scroll"])
-        self.driver.execute_script(f"{root}.querySelector('.link').click()")
+        self.wait.until(lambda _: layout()["note"] == "Chrome text")
+        state=layout()
+        self.assertEqual(["❓","❌"], state["controls"])
+        for key in ("allInHeader","accessible","editorVisible"):
+            self.assertTrue(state[key], state)
+        self.assertFalse(state["forbidden"])
+        self.assertFalse(state["extraText"])
+        self.assertIsNone(state["placeholder"])
+        self.assertGreater(state["emptySpace"], 100)
+        self.assertEqual("❓ ❌",state["headerText"])
+        # Keyboard activation uses the same pairing action.
+        self.driver.execute_script(f"{root}.querySelector('.link').focus()")
+        self.driver.execute_script(f"return {root}.querySelector('.link')").send_keys(Keys.ENTER)
         self.assertTrue(self.driver.execute_script("return fixtureMessages.some(m=>m.type==='context:arm')"))
         self.driver.execute_script("""
             fixtureContext.twin={codex_thread:'fixture-thread'};
-            fixtureContext.pn_card.what='Descrizione canonica completa e leggibile. '.repeat(16);
+            fixtureContext.collapsed=true;
+            fixtureContext.pn_card.what='Descrizione non visibile. '.repeat(300);
             fixtureRefresh();
         """)
-        self.wait.until(lambda _: layout()["pnHeight"] > 130)
-        self.assertFalse(layout()["scroll"], layout())
-        self.assertEqual(["🔗", "🗑"], layout()["controls"])
-        # Native resizing must not truncate a description that fits the viewport.
-        self.driver.execute_script(f"{root}.querySelector('.box').style.height='110px'")
-        self.wait.until(lambda _: not layout()["scroll"])
+        self.wait.until(lambda _: layout()["controls"] == ["🔗","🗑","❌"])
+        self.assertTrue(layout()["editorVisible"])
+        self.assertEqual("🔗 🗑 ❌",layout()["headerText"])
+        self.assertFalse(layout()["forbidden"])
         self.driver.execute_script(f"{root}.querySelector('.switch').click()")
         self.assertTrue(self.driver.execute_script("return fixtureMessages.some(m=>m.type==='context:switch')"))
         self.driver.execute_script("fixtureFailUnlink=true")
         self.driver.execute_script(f"{root}.querySelector('.unlink').click()")
-        self.assertEqual(["🔗", "🗑"], layout()["controls"])
+        self.assertEqual(["🔗","🗑","❌"], layout()["controls"])
         self.driver.execute_script("fixtureFailUnlink=false")
         self.driver.execute_script(f"{root}.querySelector('.unlink').click()")
-        self.wait.until(lambda _: layout()["controls"] == ["❓"])
+        self.wait.until(lambda _: layout()["controls"] == ["❓","❌"])
         self.assertEqual("Chrome text", layout()["note"])
-        self.assertEqual(["Codex text", True], self.driver.execute_script("return [fixtureContext.codex_note,fixtureContext.notes_independent]"))
+        self.assertEqual(["Codex text",True],self.driver.execute_script("return [fixtureContext.codex_note,fixtureContext.notes_independent]"))
         self.assertTrue(self.driver.execute_script("return fixtureMessages.some(m=>m.type==='context:read')"))
-        self.driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {"width":500,"height":350,"deviceScaleFactor":1,"mobile":False})
-        self.driver.execute_script("fixtureContext.pn_card.what='Testo lunghissimo. '.repeat(300);fixtureRefresh()")
-        self.wait.until(lambda _: layout()["scroll"])
-        self.assertTrue(layout()["actionsVisible"], layout())
-        self.assertLessEqual(layout()["bottom"], layout()["viewport"])
-        self.driver.execute_script(f"{root}.querySelector('summary').click()")
-        self.assertTrue(layout()["details"])
-        self.driver.execute_cdp_cmd("Emulation.clearDeviceMetricsOverride", {})
-        self.wait.until(lambda _: self.driver.execute_script("return innerWidth >= 1200"))
+        # The blank part of the header still handles real pointer dragging.
+        head=self.driver.execute_script(f"return {root}.querySelector('.head')")
+        before=self.driver.execute_script("return document.getElementById('chrome-codex-switcher-host').offsetLeft")
+        ActionChains(self.driver).move_to_element_with_offset(head,-head.size['width']/2+10,0).click_and_hold().move_by_offset(35,20).release().perform()
+        self.wait.until(lambda _: self.driver.execute_script("return document.getElementById('chrome-codex-switcher-host').offsetLeft") > before)
+        self.driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride",{"width":320,"height":220,"deviceScaleFactor":1,"mobile":False})
+        self.wait.until(lambda _: layout()["bottom"]<=layout()["viewport"])
+        self.assertTrue(layout()["editorVisible"])
+        self.driver.execute_cdp_cmd("Emulation.clearDeviceMetricsOverride",{})
+        self.driver.execute_script(f"{root}.querySelector('.close').click()")
+        self.assertFalse(layout()["visible"])
+        self.assertEqual("Chrome text",layout()["note"])
+        self.driver.execute_script(f"""
+            const n={root}.querySelector('.note');
+            n.value='pending old context';n.dispatchEvent(new Event('input'));
+            fixtureContext={{...fixtureContext,id:'second-context',note:'Second note',hidden:false,twin:{{codex_thread:'second-thread'}}}};
+            fixtureRefresh();
+        """)
+        self.wait.until(lambda _: layout()["note"] == "Second note")
+        self.assertEqual(["🔗","🗑","❌"],layout()["controls"])
+        self.wait.until(lambda _: self.driver.execute_script("return fixtureMessages.some(m=>m.type==='context:note'&&m.contextId==='overlay-fixture'&&m.note==='pending old context')"))
+        self.assertEqual("Second note",layout()["note"])
+
+    def test_legacy_collapsed_preference_does_not_hide_the_note(self) -> None:
+        self.driver.get(self._url("legacy-collapse", "seed"))
+        self._wait_extension()
+        context=self._context_for_url(self._canonical_url("legacy-collapse"))
+        self._post("/api/ui",{"context_id":context["id"],"collapsed":True})
+        self.driver.refresh()
+        self._wait_extension()
+        state=self.driver.execute_script("""
+            const r=document.getElementById('chrome-codex-switcher-host').shadowRoot;
+            return {height:r.querySelector('.note').getBoundingClientRect().height,button:!!r.querySelector('.collapse')};
+        """)
+        self.assertGreaterEqual(state['height'],58)
+        self.assertFalse(state['button'])
+        self.assertTrue(self._context_for_url(self._canonical_url("legacy-collapse"))['collapsed'])
 
     def test_overlay_unlink_preserves_actual_separate_notes(self) -> None:
         self.driver.get(self._url("unlink-real", "pair"))
