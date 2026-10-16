@@ -570,8 +570,29 @@ async function controlChrome(payload) {
   };
 }
 
+async function closeBlurredDashboard(payload) {
+  // Never act on replayed events after a disconnected worker resumes.
+  const age = Date.now() - Number(payload.issued_at);
+  if (!Number.isFinite(age) || age < 0 || age >= 2000) return;
+  const windows = await chrome.windows.getAll({populate: true, windowTypes: ["normal"]});
+  if (windows.some(win => win.focused)) return;
+  const last = await chrome.windows.getLastFocused({populate: true, windowTypes: ["normal"]});
+  if (last.focused || last.tabs?.length !== 1) return;
+  const tab = last.tabs[0];
+  // Exact URL and a single tab identify the --new-window dashboard, not a
+  // side panel or a browser window containing the user's other tabs.
+  if (tab.url !== `${BASE}/ui/search` || tab.pendingUrl) return;
+  // Recheck immediately before removal, including new tabs and restored focus.
+  const current = await chrome.windows.get(last.id, {populate: true});
+  if (current.focused || current.tabs?.length !== 1 || current.tabs[0].id !== tab.id
+      || current.tabs[0].url !== `${BASE}/ui/search` || current.tabs[0].pendingUrl) return;
+  await chrome.windows.remove(current.id);
+}
+
 async function processEvent(event) {
-  if (event.type === "focus_chrome") {
+  if (event.type === "dashboard_blur") {
+    await closeBlurredDashboard(event.payload);
+  } else if (event.type === "focus_chrome") {
     await focusContext(event.payload);
   } else if (event.type === "control_chrome") {
     let result;
@@ -705,6 +726,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.type === "context:get") {
         const tab = sender.tab || await currentTab();
         sendResponse({ok: true, context: await ensureContext(tab)});
+      } else if (message.type === "context:read") {
+        sendResponse(await api(`/api/context?context_id=${encodeURIComponent(message.contextId)}`));
       } else if (message.type === "pn:manual") {
         sendResponse(await api("/api/pn/manual", {method: "POST", body: message.values}));
       } else if (message.type === "context:note") {

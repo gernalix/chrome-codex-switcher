@@ -11,34 +11,38 @@
 
   shadow.innerHTML = `
     <style>
-      *{box-sizing:border-box} .box{width:100%;height:100%;min-width:230px;min-height:105px;resize:both;overflow:auto;background:#17181b;color:#f2f2f2;border:1px solid #4b4d55;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.36);font:13px/1.35 system-ui,sans-serif;display:flex;flex-direction:column}
-      .head{display:flex;align-items:center;gap:6px;padding:7px 8px;background:#23252a;cursor:move;user-select:none;border-radius:9px 9px 0 0}.title{font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.status{font-size:11px;color:#aaa}.btn{appearance:none;border:0;border-radius:6px;background:#33363d;color:#eee;padding:4px 7px;cursor:pointer;font:inherit}.btn:hover{background:#464a53}.icon{padding:3px 6px}.body{display:flex;flex:1;min-height:0;flex-direction:column;padding:7px;gap:7px}.note{width:100%;height:100%;min-height:52px;flex:1;resize:none;border:1px solid #3e4148;border-radius:7px;background:#101114;color:#f4f4f4;padding:7px;font:13px/1.4 system-ui,sans-serif;outline:none}.note:focus{border-color:#777b87}.actions{display:flex;gap:6px;align-items:center}.mode{display:flex;align-items:center;gap:6px;font-size:11px;color:#c6c8ce;user-select:none}.mode input{margin:0}.hint{font-size:11px;color:#aeb1b8;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.collapsed .body{display:none}.collapsed{min-height:38px!important;height:38px!important;resize:none}.flash{position:absolute;left:8px;right:8px;bottom:8px;padding:6px 8px;border-radius:6px;background:#363941;color:#fff;opacity:0;pointer-events:none;transition:opacity .15s}.flash.show{opacity:1}.pn-info{max-height:130px;overflow:auto;font-size:11px;border-left:3px solid #6a8ee8;padding-left:6px;overflow-wrap:anywhere}.pn-info a{color:#a9c2ff;margin-right:8px}.pn-info summary{cursor:pointer}.pn-info button,.pn-info textarea{max-width:100%}.pn-info p{margin:5px 0}.status{max-width:85px;overflow-wrap:anywhere}
+      *{box-sizing:border-box}[hidden]{display:none!important}
+      .box{width:100%;height:100%;min-width:min(230px,100vw);min-height:min(var(--content-height,105px),var(--available-height,100vh));max-width:100vw;max-height:var(--available-height,100vh);resize:both;overflow:hidden;background:#17181b;color:#f2f2f2;border:1px solid #4b4d55;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.36);font:13px/1.35 system-ui,sans-serif;display:flex;flex-direction:column}
+      .head{display:flex;align-items:center;gap:3px;padding:2px 4px;background:#23252a;cursor:move;user-select:none;flex-shrink:0}.grip{flex:1;color:#aeb1b8}.status{font-size:11px;color:#aaa;max-width:85px;overflow-wrap:anywhere}
+      .btn{appearance:none;border:0;border-radius:5px;background:#33363d;color:#eee;min-width:28px;min-height:28px;padding:2px 5px;cursor:pointer;font:inherit}.btn:hover{background:#464a53}.btn:focus-visible,summary:focus-visible{outline:2px solid #a9c2ff;outline-offset:-2px}
+      .body{display:flex;flex:1;min-height:0;flex-direction:column;padding:4px;gap:4px;overflow:auto}.note{width:100%;min-height:58px;flex:1 0 58px;resize:none;border:1px solid #3e4148;border-radius:5px;background:#101114;color:#f4f4f4;padding:5px;font:13px/1.4 system-ui,sans-serif;outline:none}.note:focus{border-color:#777b87}
+      .actions{display:flex;gap:4px;align-items:center;padding:0 4px 4px;flex-shrink:0}.hint{font-size:11px;color:#aeb1b8;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.collapsed .body,.collapsed .actions{display:none}.collapsed{min-height:32px!important;height:32px!important;resize:none}
+      .flash{position:absolute;left:4px;right:4px;bottom:4px;padding:6px;border-radius:5px;background:#363941;color:#fff;opacity:0;pointer-events:none;transition:opacity .15s}.flash.show{opacity:1}.pn-info{flex-shrink:0;font-size:12px;border-left:2px solid #6a8ee8;padding-left:5px;overflow-wrap:anywhere}.pn-info a{color:#a9c2ff;margin-right:6px}.pn-info summary{cursor:pointer}.pn-info button,.pn-info textarea{max-width:100%}.pn-info p{margin:4px 0}
+
     </style>
     <div class="box">
       <div class="head">
-        <div class="title">Context Twin</div><div class="status"></div>
-        <button class="btn icon collapse" title="Collapse">−</button>
-        <button class="btn icon close" title="Hide">×</button>
+        <span class="grip" aria-hidden="true">⠿</span><div class="status"></div>
+        <button class="btn icon collapse" title="Minimizza o espandi nota" aria-label="Minimizza o espandi nota">−</button>
+        <button class="btn icon close" title="Nascondi nota" aria-label="Nascondi nota">×</button>
       </div>
       <div class="body">
         <div class="pn-info" hidden></div>
-        <textarea class="note" placeholder="What is this tab for?"></textarea>
-        <label class="mode"><input class="independent" type="checkbox"> Separate Chrome/Codex notes</label>
+        <textarea class="note" aria-label="Nota Chrome" placeholder="What is this tab for?"></textarea>
+      </div>
         <div class="actions">
-          <button class="btn link">Link Codex</button>
-          <button class="btn switch">↔ Codex</button>
+          <button class="btn link" title="Collega chat Codex" aria-label="Collega chat Codex">❓</button>
+          <button class="btn switch" hidden title="Apri chat Codex collegata" aria-label="Apri chat Codex collegata">🔗</button>
+          <button class="btn unlink" hidden title="Scollega Codex conservando le note" aria-label="Scollega Codex conservando le note">🗑</button>
           <div class="hint"></div>
         </div>
-      </div>
-      <div class="flash"></div>
+      <div class="flash" role="status" aria-live="polite"></div>
     </div>`;
 
   const box = shadow.querySelector(".box");
-  const title = shadow.querySelector(".title");
   const status = shadow.querySelector(".status");
   const note = shadow.querySelector(".note");
   const pnInfo = shadow.querySelector(".pn-info");
-  const independent = shadow.querySelector(".independent");
   const hint = shadow.querySelector(".hint");
   const flashEl = shadow.querySelector(".flash");
   let context = null;
@@ -352,6 +356,7 @@
     }
     pendingUi = {...pendingUi, ...extra};
     pendingGeometry = geometryOverride || geometry();
+    context = {...context, geometry: pendingGeometry, ...extra};
     clearTimeout(uiTimer);
     uiTimer = setTimeout(() => {
       const contextId = pendingContextId;
@@ -365,6 +370,7 @@
 
   function applyContext(next) {
     if (!next) return;
+    if (pendingContextId === next.id) next = {...next, geometry: pendingGeometry, ...pendingUi};
     const contextChanged = promptScanContextId !== next.id;
     context = next;
     if (contextChanged) {
@@ -374,7 +380,6 @@
       clearTimeout(promptIdFlushTimer);
       if (promptIdObserver) queueMicrotask(scanFullPageForPromptIds);
     }
-    title.textContent = next.pn_card ? next.pn_card.id + " · " + next.pn_card.title : next.title || document.title || "Context Twin";
     pnInfo.hidden = !next.pn_card;
     if (next.pn_card && (contextChanged || !pnInfo.querySelector("details[open]"))) {
       pnInfo.textContent = "";
@@ -382,9 +387,16 @@
       what.textContent = next.pn_card.what ? "Cosa fa: " + next.pn_card.what : "Descrizione di " + next.pn_card.id + " da completare nella registrazione MegaVault.";
       pnInfo.append(what, PnCardsUI.details(next.pn_card));
     }
+    if (next.pn_card && pnInfo.firstElementChild) {
+      pnInfo.firstElementChild.textContent = next.pn_card.what ? "Cosa fa: " + next.pn_card.what
+        : "Descrizione di " + next.pn_card.id + " da completare nella registrazione MegaVault.";
+    }
     if (!next.pn_card) pnInfo.textContent = "";
     if (shadow.activeElement !== note) note.value = next.note || "";
-    independent.checked = !!next.notes_independent;
+    const linked = !!next.twin?.codex_thread;
+    shadow.querySelector(".link").hidden = linked;
+    shadow.querySelector(".switch").hidden = !linked;
+    shadow.querySelector(".unlink").hidden = !linked;
     status.textContent = next.pn_card ? next.pn_card.status : next.twin ? "linked" : "unlinked";
     hint.textContent = next.twin ? next.twin.codex_thread : "";
     box.classList.toggle("collapsed", !!next.collapsed);
@@ -393,8 +405,30 @@
     if (Number.isFinite(g.x)) host.style.left = `${Math.max(0, g.x)}px`;
     if (Number.isFinite(g.y)) host.style.top = `${Math.max(0, g.y)}px`;
     if (Number.isFinite(g.width)) host.style.width = `${Math.max(230, g.width)}px`;
-    if (Number.isFinite(g.height)) host.style.height = `${Math.max(105, g.height)}px`;
+    box.style.width = "";
+    box.style.height = "";
+    if (contextChanged) host.style.height = `${Math.max(105, g.height || 160)}px`;
+    fitContent();
   }
+
+  function fitContent() {
+    if (!context || host.style.display === "none") return;
+    const width = Math.min(innerWidth, Math.max(230, context.geometry?.width || host.offsetWidth));
+    host.style.width = `${width}px`;
+    const x = Math.max(0, Math.min(host.offsetLeft, innerWidth - width));
+    const y = Math.max(0, Math.min(host.offsetTop, innerHeight - 140));
+    host.style.left = `${x}px`;
+    host.style.top = `${y}px`;
+    const available = Math.max(0, innerHeight - y - 4);
+    host.style.setProperty("--available-height", `${available}px`);
+    const natural = (pnInfo.hidden ? 0 : pnInfo.scrollHeight + 4) + 58
+      + shadow.querySelector(".head").offsetHeight + shadow.querySelector(".actions").offsetHeight + 10;
+    host.style.setProperty("--content-height", `${natural}px`);
+    host.style.height = `${Math.min(available, Math.max(context.geometry?.height || 160, parseFloat(host.style.height) || 160, natural))}px`;
+  }
+
+  pnInfo.addEventListener("toggle", fitContent, true);
+  window.addEventListener("resize", fitContent);
 
   const REFRESH_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 3000, 5000, 5000];
 
@@ -431,21 +465,31 @@
     }), 220);
   });
 
-  independent.addEventListener("change", async () => {
-    if (!context) return;
-    const result = await send({
-      type: "context:note-mode",
-      contextId: context.id,
-      independent: independent.checked,
-      source: "chrome",
-      note: note.value
-    });
-    if (result?.ok && result.context) {
-      applyContext(result.context);
-    } else {
-      independent.checked = !!context.notes_independent;
-      flash("Note mode failed: " + (result?.error || "daemon unavailable"));
+  shadow.querySelector(".unlink").addEventListener("click", async event => {
+    if (!context?.twin) return;
+    const contextId = context.id;
+    const button = event.currentTarget;
+    button.disabled = true;
+    clearTimeout(noteTimer);
+    const saved = await send({type: "context:note", contextId, note: note.value, surface: "chrome"});
+    if (!saved?.ok) {
+      button.disabled = false;
+      flash("Nota non salvata: " + (saved?.error || "daemon unavailable"));
+      return;
     }
+    const result = await send({type: "side:unlink", contextId});
+    if (result?.ok) {
+      // Read the same context, even if the active page changed during the request.
+      const readback = await send({type: "context:read", contextId});
+      if (context?.id === contextId && readback?.ok && !readback.context?.twin) {
+        applyContext(readback.context);
+      } else if (!readback?.ok || readback.context?.twin) {
+        flash("Scollegamento non verificato: aggiorna lo stato");
+      }
+    } else {
+      flash("Scollegamento fallito: " + (result?.error || "daemon unavailable"));
+    }
+    button.disabled = false;
   });
 
   shadow.querySelector(".link").addEventListener("click", async () => {
@@ -486,10 +530,19 @@
     if (!drag) return;
     drag = null;
     try { event.currentTarget.releasePointerCapture(event.pointerId); } catch {}
+    fitContent();
     saveUi();
   });
 
-  new ResizeObserver(() => { if (context && host.style.display !== "none") saveUi(); }).observe(box);
+  new ResizeObserver(() => {
+    if (!context || host.style.display === "none") return;
+    if (!box.classList.contains("collapsed")) {
+      const rect = box.getBoundingClientRect();
+      host.style.width = `${rect.width}px`;
+      host.style.height = `${rect.height}px`;
+    }
+    saveUi();
+  }).observe(box);
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === "controlWorkflowy") {
@@ -506,9 +559,9 @@
         ok: true,
         context_id: context?.id || null,
         note: note.value,
-        notes_independent: !!independent.checked,
+        notes_independent: !!context?.notes_independent,
         visible: host.style.display !== "none",
-        title: title.textContent || "",
+        title: context?.title || "",
         url: location.href
       });
       return;
