@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 
-PN_START = re.compile(r'^(P[1-9][0-9]*)(?=$|[\s:;,|/\-–—])')
+PN_START = re.compile(r'^([Pp][1-9][0-9]*)(?=$|[\s:;,|/\-–—])')
 STATES = ('sconosciuto', 'non avviato', 'in corso', 'BLOCKED', 'FAIL', 'PASS', 'annullato')
 FIELDS = ('title', 'what', 'why', 'status', 'blocker', 'next_step')
 STALE_SECONDS = 24 * 3600
@@ -23,7 +23,7 @@ def classify(note: str) -> tuple[str, str] | None:
     match = PN_START.match(first)
     if not match:
         return None
-    return match[1], first[match.end():].strip(' \t:;,|/-–—')
+    return match[1].upper(), first[match.end():].strip(' \t:;,|/-–—')
 
 
 def sync_note(note: str) -> str:

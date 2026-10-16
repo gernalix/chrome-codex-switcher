@@ -29,12 +29,29 @@ class PnCardsTests(unittest.TestCase):
         return patch('chrome_codex_switcher.pn_cards.subprocess.run',return_value=subprocess.CompletedProcess([],0,json.dumps(self.record),''))
 
     def test_first_line_boundary_and_legacy(self):
-        for note in ['P5 titolo','P5: titolo','P5 — titolo','P5\nnota','P5\r\nnota']:
+        for note in ['P5 titolo','P5: titolo','P5 — titolo','P5\nnota','P5\r\nnota','p5','p5 titolo','p5: titolo','p5\nnota']:
             self.assertEqual(classify(note)[0],'P5')
-        for note in ['Piano','P0','P05','p5','P5x',' P5','nota\nP5','123456','P5_foo']:
+        for note in ['Piano','P0','P05','p0','p05','p5x','P5x',' P5','nota\nP5','123456','P5_foo']:
             self.assertIsNone(classify(note),note)
         self.assertEqual(sync_note(self.context['note']),'P5\naumentare spazio\nNota originale')
         self.assertEqual(sync_note('P5\nnota'),'P5\nnota')
+
+    def test_lowercase_recognition_keeps_lookup_canonical_and_sync_strict(self):
+        for text in ('p58', 'P58', 'p58 titolo', 'p58: titolo', 'p58\nnota'):
+            self.assertEqual('P58', classify(text)[0])
+        for text in ('p0', 'p05', 'p58x', ' p58', 'nota\np58', '123456'):
+            self.assertIsNone(classify(text), text)
+        with self.source() as call:
+            for text in ('p5', 'p5 titolo', 'p5: titolo', 'p5\nnota', 'P5\nnota'):
+                result = self.cards.enrich({**self.context, 'note': text})
+                self.assertEqual(text, result['note'])
+                self.assertEqual('P5', result['pn_card']['id'])
+                self.assertEqual(text.split('\n', 1)[0] == 'P5', result['pn_card']['sync_ready'])
+            self.assertEqual(1, call.call_count)
+            self.assertEqual('P5', call.call_args.args[0][-1])
+        self.assertEqual({'P5'}, set(self.cards._checked))
+        self.assertIsNotNone(self.store.get_meta('pn-card-cache:P5'))
+        self.assertIsNone(self.store.get_meta('pn-card-cache:p5'))
 
     def test_verified_cards_plural_chat_links_do_not_imply_pass(self):
         with self.source() as call:
