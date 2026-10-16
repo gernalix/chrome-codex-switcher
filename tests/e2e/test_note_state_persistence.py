@@ -572,6 +572,9 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self.wait.until(lambda _: layout()["pnHeight"] > 130)
         self.assertFalse(layout()["scroll"], layout())
         self.assertEqual(["🔗", "🗑"], layout()["controls"])
+        # Native resizing must not truncate a description that fits the viewport.
+        self.driver.execute_script(f"{root}.querySelector('.box').style.height='110px'")
+        self.wait.until(lambda _: not layout()["scroll"])
         self.driver.execute_script(f"{root}.querySelector('.switch').click()")
         self.assertTrue(self.driver.execute_script("return fixtureMessages.some(m=>m.type==='context:switch')"))
         self.driver.execute_script("fixtureFailUnlink=true")
