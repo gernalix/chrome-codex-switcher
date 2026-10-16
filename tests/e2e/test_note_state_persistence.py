@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,7 +22,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 ROOT = Path(__file__).resolve().parents[2]
 EXTENSION_DIR = ROOT / "extension"
-DAEMON_PORT = 43817
+DAEMON_PORT = int(os.environ.get("CCS_E2E_PORT", "43817"))
 
 
 class _PageHandler(BaseHTTPRequestHandler):
@@ -65,7 +66,15 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         chrome_binary = os.environ.get("CHROME_BINARY")
         if chrome_binary:
             options.binary_location = chrome_binary
-        extension = str(EXTENSION_DIR.resolve())
+        extension_dir = EXTENSION_DIR
+        if DAEMON_PORT != 43817:
+            # Isolate local acceptance from the always-on user's bridge.
+            extension_dir = cls.tmp_path / "extension"
+            shutil.copytree(EXTENSION_DIR, extension_dir)
+            for path in extension_dir.iterdir():
+                if path.suffix in {".js", ".json"}:
+                    path.write_text(path.read_text().replace(":43817", f":{DAEMON_PORT}"))
+        extension = str(extension_dir.resolve())
         options.add_argument(f"--disable-extensions-except={extension}")
         options.add_argument(f"--load-extension={extension}")
         options.add_argument(f"--user-data-dir={cls.tmp_path / 'chrome-profile'}")
@@ -73,6 +82,9 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         options.add_argument("--no-default-browser-check")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-gpu")
+        # Xvfb alone is insufficient on a Wayland desktop: Chrome can otherwise
+        # connect to the inherited native compositor and steal the user's focus.
+        options.add_argument("--ozone-platform=x11")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--window-size=1280,900")
 
@@ -447,7 +459,7 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         focused = self.driver.execute_script(
             "return document.querySelector('#chrome-codex-switcher-host').shadowRoot.activeElement?.className === 'note'"
         )
-        self.assertTrue(focused)
+        self.assertTrue(focused, self.driver.execute_script("return {active:document.activeElement?.tagName, width:innerWidth,height:innerHeight, url:location.href}"))
         self.assertEqual("local focused edit", self._snapshot()["note"])
 
     def test_split_merge_notes_uses_current_value_and_persists_both_surfaces(self) -> None:
@@ -465,9 +477,14 @@ class NoteStatePersistenceE2E(unittest.TestCase):
             note.focus();
             note.value = 'current shared value';
             note.dispatchEvent(new Event('input', {bubbles: true}));
-            root.querySelector('.independent').click();
             """
         )
+        # Separate mode remains an API/side-panel setting; the overlay no longer
+        # contains a checkbox that could merge notes accidentally.
+        self._post("/api/note-mode", {
+            "context_id": context["id"], "independent": True,
+            "source": "chrome", "note": "current shared value",
+        })
         deadline = time.time() + 8
         while time.time() < deadline:
             with sqlite3.connect(self.db_path) as db:
@@ -519,6 +536,84 @@ class NoteStatePersistenceE2E(unittest.TestCase):
             "note": "codex independent",
         })["context"]
         self.assertEqual(merged["note"], repeated["note"])
+
+    def test_overlay_compact_layout_and_pairing_controls(self) -> None:
+        self.driver.get(self._url("compact-fixture", "layout"))
+        self._wait_extension()
+        self.driver.execute_script("document.getElementById('chrome-codex-switcher-host').remove()")
+        for name in ("tests/e2e/overlay_fixture.js", "extension/pn-cards.js", "extension/content.js"):
+            self.driver.execute_script((ROOT / name).read_text())
+        root = "document.getElementById('chrome-codex-switcher-host').shadowRoot"
+        def layout():
+            return self.driver.execute_script("""
+                const host=document.getElementById('chrome-codex-switcher-host'),r=host.shadowRoot;
+                const b=r.querySelector('.body'),p=r.querySelector('.pn-info'),a=r.querySelector('.actions');
+                return {scroll:b.scrollHeight>b.clientHeight+1,pnHeight:p.offsetHeight,
+                  complete:p.textContent.includes(fixtureContext.pn_card.what),
+                  bottom:host.getBoundingClientRect().bottom,viewport:innerHeight,
+                  controls:[...r.querySelectorAll('.actions button')].filter(b=>!b.hidden).map(b=>b.textContent),
+                  title:!!r.querySelector('.title'),mode:!!r.querySelector('.independent'),
+                  details:r.querySelector('details').open,actionsVisible:a.getBoundingClientRect().bottom<=innerHeight,
+                  note:r.querySelector('.note').value};
+            """)
+        self.wait.until(lambda _: layout()["complete"])
+        self.assertEqual(["❓"], layout()["controls"])
+        self.assertFalse(layout()["title"])
+        self.assertFalse(layout()["mode"])
+        self.assertFalse(layout()["details"])
+        self.assertFalse(layout()["scroll"])
+        self.driver.execute_script(f"{root}.querySelector('.link').click()")
+        self.assertTrue(self.driver.execute_script("return fixtureMessages.some(m=>m.type==='context:arm')"))
+        self.driver.execute_script("""
+            fixtureContext.twin={codex_thread:'fixture-thread'};
+            fixtureContext.pn_card.what='Descrizione canonica completa e leggibile. '.repeat(16);
+            fixtureRefresh();
+        """)
+        self.wait.until(lambda _: layout()["pnHeight"] > 130)
+        self.assertFalse(layout()["scroll"], layout())
+        self.assertEqual(["🔗", "🗑"], layout()["controls"])
+        self.driver.execute_script(f"{root}.querySelector('.switch').click()")
+        self.assertTrue(self.driver.execute_script("return fixtureMessages.some(m=>m.type==='context:switch')"))
+        self.driver.execute_script("fixtureFailUnlink=true")
+        self.driver.execute_script(f"{root}.querySelector('.unlink').click()")
+        self.assertEqual(["🔗", "🗑"], layout()["controls"])
+        self.driver.execute_script("fixtureFailUnlink=false")
+        self.driver.execute_script(f"{root}.querySelector('.unlink').click()")
+        self.wait.until(lambda _: layout()["controls"] == ["❓"])
+        self.assertEqual("Chrome text", layout()["note"])
+        self.assertEqual(["Codex text", True], self.driver.execute_script("return [fixtureContext.codex_note,fixtureContext.notes_independent]"))
+        self.assertTrue(self.driver.execute_script("return fixtureMessages.some(m=>m.type==='context:read')"))
+        self.driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {"width":500,"height":350,"deviceScaleFactor":1,"mobile":False})
+        self.driver.execute_script("fixtureContext.pn_card.what='Testo lunghissimo. '.repeat(300);fixtureRefresh()")
+        self.wait.until(lambda _: layout()["scroll"])
+        self.assertTrue(layout()["actionsVisible"], layout())
+        self.assertLessEqual(layout()["bottom"], layout()["viewport"])
+        self.driver.execute_script(f"{root}.querySelector('summary').click()")
+        self.assertTrue(layout()["details"])
+        self.driver.execute_cdp_cmd("Emulation.clearDeviceMetricsOverride", {})
+        self.wait.until(lambda _: self.driver.execute_script("return innerWidth >= 1200"))
+
+    def test_overlay_unlink_preserves_actual_separate_notes(self) -> None:
+        self.driver.get(self._url("unlink-real", "pair"))
+        self._wait_extension()
+        context = self._context_for_url(self._canonical_url("unlink-real"))
+        root = "document.getElementById('chrome-codex-switcher-host').shadowRoot"
+        self.driver.execute_script(f"{root}.querySelector('.link').click()")
+        # Wait for the click to arm pairing before delivering the clipboard link.
+        self.wait.until(lambda _: self.driver.execute_script(f"return {root}.querySelector('.flash').textContent.includes('Now open')"))
+        self._post("/api/clipboard", {"text":"codex://threads/e2e-unlink"})
+        self.wait.until(lambda _: self.driver.execute_script(f"return !{root}.querySelector('.unlink').hidden"))
+        self._post("/api/note-mode", {"context_id":context["id"],"independent":True,"source":"chrome","note":"Chrome survives"})
+        self._post("/api/note", {"context_id":context["id"],"surface":"codex","note":"Codex survives"})
+        self.driver.refresh()
+        self._wait_extension()
+        self.driver.execute_script(f"{root}.querySelector('.unlink').click()")
+        self.wait.until(lambda _: self.driver.execute_script(f"return !{root}.querySelector('.link').hidden"))
+        after = self._context_for_url(self._canonical_url("unlink-real"))
+        self.assertEqual(("Chrome survives","Codex survives",1),(after["note"],after["codex_note"],after["notes_independent"]))
+        self.driver.refresh()
+        self._wait_extension()
+        self.assertTrue(self.driver.execute_script(f"return {root}.querySelector('.unlink').hidden"))
 
     def test_daemon_dashboard_is_not_an_overlay_target(self) -> None:
         self.driver.get(f"http://127.0.0.1:{DAEMON_PORT}/ui/search")

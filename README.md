@@ -92,14 +92,14 @@ context-twin status
 
 ### Pair Chrome Y ↔ Codex X
 
-1. In Chrome Y, press **Alt+Shift+K** or click **Link Codex** in the floating note.
+1. In Chrome Y, press **Alt+Shift+K** or click **❓** in the floating note.
 2. Switch to Codex X.
 3. In Codex Desktop press **Copy chat deep link** (`Ctrl+Alt+L` on the current Linux build).
 4. The daemon stores the pair.
 
 ### Chrome → Codex
 
-While Chrome Y is active, press **Alt+Shift+G** or click **↔ Codex**.
+While Chrome Y is active, press **Alt+Shift+G** or click **🔗**.
 
 ### Codex → Chrome
 
@@ -111,7 +111,7 @@ Copying a Codex deep link intentionally acts as “switch to twin” outside pai
 
 ### Search dashboard
 
-Press **Alt+Shift+S** globally from GNOME to open the context dashboard, regardless of which application currently has focus. The GNOME Settings Daemon custom binding owns this system-wide shortcut and opens the localhost dashboard in Google Chrome. The Chrome extension keeps the same shortcut as an in-Chrome fallback.
+Press **Alt+Shift+S** globally from GNOME to open the context dashboard, regardless of which application currently has focus. The GNOME Settings Daemon custom binding owns this system-wide shortcut and opens the localhost dashboard in Google Chrome. The Chrome extension keeps the same shortcut as an in-Chrome fallback. When you switch from the standalone dashboard to another application, the GNOME companion and Chrome extension close that dashboard window. Menus and temporary dialogs leave it open. Windows with other tabs and the in-Chrome side panel are preserved.
 
 The extension bundles its GSettings schema inside its own `schemas/` directory, so a plain system-level `gsettings get org.gnome.shell.extensions.chrome-codex-switcher open-search-dashboard` may report `No such schema`. Verify the bundled schema with:
 
@@ -124,7 +124,7 @@ Start typing immediately to filter by note text, canonical/page-detected `PROMPT
 
 ### Floating note
 
-The Chrome floating note remains editable, draggable, resizable, collapsible and hideable. Notes persist per tab-context and remain searchable. Existing shared/independent Chrome and Codex note data is preserved; no floating note is rendered on Codex or ChatGPT Desktop.
+The Chrome floating note remains editable, draggable, resizable, collapsible and hideable. Notes persist per tab-context and remain searchable. Existing shared/independent Chrome and Codex note data is preserved; no floating note is rendered on Codex or ChatGPT Desktop. The compact drag bar keeps minimize/hide controls without repeating the title. **❓** starts pairing when unlinked; **🔗** opens the paired chat and **🗑** unlinks it. Unlink preserves both note texts and the existing separate-note mode. Each icon has a descriptive tooltip and keyboard-accessible label.
 
 ### Pn prompt cards
 
@@ -134,7 +134,7 @@ The dashboard and side panel distinguish Pn cards with a colored border, ID, tit
 
 MegaVault is read through its canonical `prompt show` verification (including body SHA256), with on-demand change detection and a verified projection cached in the existing CCS meta table. It is never written by this presentation. All associated canonical chat links are shown; chat UUIDs and Pn IDs stay distinct. No synthetic MegaVault URL is generated. Offline metadata is labeled obsolete; source and verification time are visible. Administrative registration (`registered`, `launched`, `cancelled`) is shown separately and **never establishes Codex PASS or any execution status**. Without a verified execution feed the status is explicitly **sconosciuto**.
 
-Use **Integra dati manualmente** to persist a plain-language summary, practical benefit, status, blocker and next step in local CCS meta, attributed to the local user with a timestamp. ChatGPT authors “Cosa fa” from the complete prompt when registering it in MegaVault; CCS only reads the verified canonical description and caches it for offline use. Titles and notes never generate descriptions. Missing historical descriptions require upstream completion and display a separate registration message, never “Cosa fa: non disponibile”. Other unknown details remain **non disponibile**; status older than 24 hours is labeled obsolete. Manual fields never update MegaVault. Multiple contexts for the same Pn share these annotations. The Chrome overlay shows the same compact ID/status and expandable details above the original note.
+Use **Integra dati manualmente** to persist a plain-language summary, practical benefit, status, blocker and next step in local CCS meta, attributed to the local user with a timestamp. ChatGPT authors “Cosa fa” from the complete prompt when registering it in MegaVault; CCS only reads the verified canonical description and caches it for offline use. Titles and notes never generate descriptions. Missing historical descriptions require upstream completion and display a separate registration message, never “Cosa fa: non disponibile”. Other unknown details remain **non disponibile**; status older than 24 hours is labeled obsolete. Manual fields never update MegaVault. Multiple contexts for the same Pn share these annotations. The Chrome overlay shows the complete “Cosa fa” above the original note and adapts its height to the description. Only content exceeding the available viewport scrolls; pairing controls stay accessible. Supplementary details remain optional.
 
 Canonical link synchronization still requires a note first line **exactly** `Pn`. An inline title does not change this contract: **Copia nota compatibile** previews/copies `Pn\nTitle\n…` for user review, preserving the stored note. Paste/save it explicitly to opt into synchronization. The existing debounced `pn-links-changed` marker remains unchanged.
 
@@ -208,7 +208,7 @@ PYTHONPATH=host python3 -m unittest discover -s tests -v
 python3 -m py_compile host/chrome_codex_switcher/*.py
 ```
 
-CI also runs real-browser end-to-end persistence tests with Chrome for Testing plus the unpacked extension. They verify the complete floating-note state after both a page refresh and closing/reopening the tab: text, X/Y position, width, height, collapsed state, and hidden state.
+CI also runs real-browser end-to-end persistence tests with Chrome for Testing plus the unpacked extension. They also check compact overlay layout, long descriptions in small viewports, pairing controls and unlink preservation of separate notes. They verify the complete floating-note state after both a page refresh and closing/reopening the tab: text, X/Y position, width, height, collapsed state, and hidden state.
 
 
 ## Workflowy roadmap cockpit
@@ -248,3 +248,5 @@ version in its manifest. The installer copies it alongside the deployed host.
 The search dashboard displays the derived NV; a missing or invalid source shows
 `NV unavailable`. Normal commits retain NV. Explicit releases increment once and
 reconcile the integrated Git SHA through MegaVault's existing version registry.
+
+Local browser tests can use `CCS_E2E_PORT=43827` to isolate their temporary daemon and extension from a running user bridge. On Wayland, run them under Xvfb; the test browser explicitly uses X11 to avoid opening windows on the native desktop. The GNOME runtime test also covers application-focus filtering and scoped dashboard window removal; real GNOME Wayland shortcut/focus acceptance remains a separate desktop check.

@@ -334,6 +334,14 @@ class App:
             "note": str(payload.get("note") or ""),
             "notes_independent": self._truthy(payload.get("notes_independent")),
         }
+        blur_at = payload.get("dashboard_blur_at")
+        if blur_at is not None:
+            try:
+                issued_at = float(blur_at)
+            except (ValueError, TypeError):
+                issued_at = 0
+            if 0 <= time.time() * 1000 - issued_at < 2000:
+                self.broker.emit("dashboard_blur", {"issued_at": issued_at})
         self.store.set_meta("gnome_runtime", state)
         return {"ok": True, "gnome_runtime": state}
 

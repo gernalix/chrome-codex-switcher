@@ -631,6 +631,31 @@ class AppTests(unittest.TestCase):
         self.assertFalse(state["notes_independent"])
         self.assertEqual("hello", state["note"])
 
+    def test_dashboard_blur_only_forwards_fresh_focus_events(self):
+        import time
+        for stamp in ("invalid", 0, (time.time() - 10) * 1000):
+            self.app.gnome_heartbeat({"dashboard_blur_at": stamp})
+        seq, events = self.broker.wait_after(0, 0)
+        self.assertFalse(any(event["type"] == "dashboard_blur" for event in events))
+        self.app.gnome_heartbeat({"dashboard_blur_at": time.time() * 1000})
+        _, events = self.broker.wait_after(seq, 0)
+        self.assertEqual(["dashboard_blur"], [event["type"] for event in events])
+
+    def test_unlink_preserves_separate_notes_and_prompt_binding(self):
+        self.app.arm_link(self.context)
+        self.app.handle_clipboard("codex://threads/thread-unlink")
+        self.store.link_prompt("514458", "ctx-1", "thread-unlink", "codex://threads/thread-unlink")
+        self.store.set_note_mode("ctx-1", True, source="chrome", current_note="Chrome text")
+        self.store.set_note("ctx-1", "Codex text", surface="codex")
+        before = self.store.get_context("ctx-1")
+        binding = self.store.prompt_binding("514458")
+        self.assertTrue(self.app.unlink("ctx-1")["ok"])
+        after = self.store.get_context("ctx-1")
+        self.assertIsNone(after["twin"])
+        for key in ("note", "codex_note", "notes_independent", "geometry", "prompt_ids"):
+            self.assertEqual(before.get(key), after.get(key), key)
+        self.assertEqual(binding, self.store.prompt_binding("514458"))
+
     def test_open_prompt_codex_sets_expected_thread_for_a11y(self):
         self.app.upsert_context(self.context)
         self.store.link_prompt(

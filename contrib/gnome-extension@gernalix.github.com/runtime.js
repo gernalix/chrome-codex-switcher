@@ -1,6 +1,6 @@
 const DAEMON_BASE = 'http://127.0.0.1:43817';
 const DAEMON_CLIPBOARD_URL = `${DAEMON_BASE}/api/clipboard`;
-const SOURCE_VERSION = 9;
+const SOURCE_VERSION = 10;
 const CODEX_DESKTOP_APP_IDS = new Set([
     'chatgpt.desktop',
     'com.openai.chatgpt.desktop',
@@ -65,10 +65,15 @@ class ChromeCodexSwitcherBridge {
             this._refresh();
             return GLib.SOURCE_CONTINUE;
         });
+        this._lastNormalWindow = global.display.focus_window;
+        this._focusChangedId = global.display.connect('notify::focus-window', () => this._onFocusChanged());
         this._refresh();
     }
 
     disable() {
+        if (this._focusChangedId) global.display.disconnect(this._focusChangedId);
+        this._focusChangedId = null;
+        this._lastNormalWindow = null;
         if (this._timer) GLib.source_remove(this._timer);
         this._timer = null;
         if (this._selection && this._selectionChangedId) this._selection.disconnect(this._selectionChangedId);
@@ -76,6 +81,23 @@ class ChromeCodexSwitcherBridge {
         this._selection = null;
         this._clipboard = null;
         this._http = null;
+    }
+
+    _onFocusChanged() {
+        const win = global.display.focus_window;
+        // Null focus, menus and transient dialogs are not an application switch.
+        if (!win || win.get_transient_for?.() || win.get_window_type?.() !== Meta.WindowType.NORMAL) return;
+        const previous = desktopWindowIdentity(this._lastNormalWindow);
+        const current = desktopWindowIdentity(win);
+        this._lastNormalWindow = win;
+        const isChrome = identity => ['google-chrome', 'google-chrome-stable'].includes(identity.wmClass);
+        if (!isChrome(previous) || isChrome(current) || !current.appId) return;
+        this._postForm('/api/gnome-heartbeat', {
+            source_version: String(SOURCE_VERSION),
+            focused_app_id: current.appId,
+            focused_wm_class: current.wmClass,
+            dashboard_blur_at: String(Date.now()),
+        });
     }
 
     _postForm(path, payload, callback = null) {
