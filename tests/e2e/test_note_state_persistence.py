@@ -65,6 +65,8 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         cls._wait_daemon()
 
         options = Options()
+        if os.environ.get("CCS_E2E_HEADLESS") == "1":
+            options.add_argument("--headless=new")
         chrome_binary = os.environ.get("CHROME_BINARY")
         if chrome_binary:
             options.binary_location = chrome_binary
@@ -159,14 +161,14 @@ class NoteStatePersistenceE2E(unittest.TestCase):
     def _canonical_url(self, path: str) -> str:
         return f"http://127.0.0.1:{self.page_port}/{path}"
 
-    def _wait_extension(self) -> None:
+    def _wait_extension(self, *, hydrated: bool = True) -> None:
         self.wait.until(
             lambda driver: driver.execute_script(
                 """
                 const host = document.querySelector("#chrome-codex-switcher-host");
                 const root = host?.shadowRoot;
-                return !!root?.querySelector(".note") && !!host.dataset.contextId;
-                """
+                return !!root?.querySelector(".note") && (!arguments[0] || !!host.dataset.contextId);
+                """, hydrated
             )
         )
 
@@ -417,7 +419,7 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self._stop_daemon()
 
         self.driver.refresh()
-        self._wait_extension()
+        self._wait_extension(hydrated=False)
         self.assertEqual("", self._snapshot()["note"])
 
         type(self).daemon = type(self)._start_daemon()

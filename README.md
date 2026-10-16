@@ -249,4 +249,4 @@ The search dashboard displays the derived NV; a missing or invalid source shows
 `NV unavailable`. Normal commits retain NV. Explicit releases increment once and
 reconcile the integrated Git SHA through MegaVault's existing version registry.
 
-Local browser tests can use `CCS_E2E_PORT=43827` to isolate their temporary daemon and extension from a running user bridge. On Wayland, run them under Xvfb; the test browser explicitly uses X11 to avoid opening windows on the native desktop. The GNOME runtime test also covers application-focus filtering and scoped dashboard window removal; real GNOME Wayland shortcut/focus acceptance remains a separate desktop check.
+Local browser tests can use `CCS_E2E_PORT=43827` to isolate their temporary daemon and extension from a running user bridge. Set `CCS_E2E_HEADLESS=1` for tests without windows. For headed tests on Wayland, use Xvfb; the test browser explicitly uses X11 to avoid opening windows on the native compositor. The GNOME runtime test also covers application-focus filtering and scoped dashboard window removal; real GNOME Wayland shortcut/focus acceptance remains a separate desktop check.
