@@ -250,3 +250,31 @@ The search dashboard displays the derived NV; a missing or invalid source shows
 reconcile the integrated Git SHA through MegaVault's existing version registry.
 
 Local browser tests can use `CCS_E2E_PORT=43827` to isolate their temporary daemon and extension from a running user bridge. Set `CCS_E2E_HEADLESS=1` for tests without windows. For headed tests on Wayland, use Xvfb; the test browser explicitly uses X11 to avoid opening windows on the native compositor. The GNOME runtime test also covers application-focus filtering and scoped dashboard window removal; real GNOME Wayland shortcut/focus acceptance remains a separate desktop check.
+
+## Monitor elaborazioni Web e Desktop
+
+La pagina locale `http://127.0.0.1:43817/ui/activity` (link **Elaborazioni**
+nella dashboard e nel pannello dell'estensione) mostra in alto le chat
+effettivamente osservate in elaborazione, poi quelle terminate negli ultimi
+30 minuti. I pulsanti **Apri chat** riutilizzano i comandi CCS esistenti:
+focus della scheda Chrome o deep link esatto `codex://threads/<UUID>`.
+Aggiornamento ogni 4 secondi; dati e stati non vengono copiati in MegaVault.
+
+- **Web:** il content script rileva il pulsante di interruzione generazione
+  nelle schede ChatGPT aperte, senza leggere il testo della conversazione.
+  Richiede l'estensione attiva e un tab non sospeso dal browser. Se una scheda
+  sparisce/non risponde, lo stato diventa non osservabile, *mai* 'completata'.
+  L'interfaccia di chatgpt.com può cambiare: verificare dopo i suoi aggiornamenti.
+- **Desktop:** la bridge legge il DB indice Codex in sola lettura e la sequenza
+  di `task_started/task_complete/turn_aborted` nei JSONL di
+  `~/.codex/sessions`. Lo stato non è la classificazione PASS/FAIL del task.
+  Dopo un'ora senza aggiornamenti una run non è più dichiarata attiva.
+- **Telegram:** una notifica per fine/interruzione osservata, con titolo e link;
+  nessuna notifica per ripristino storico, pagina inizialmente inattiva,
+  chiusura scheda o disconnessione. Il servizio user systemd usa
+  `LoadCredential=telegram.env` tramite la credenziale utente già esistente.
+  In sua assenza la dashboard continua a funzionare, ma la notifica non parte.
+
+Non è possibile conoscere in modo affidabile lo stato delle chat **Web**
+chiuse/non montate usando la sola estensione, né garantire che lo stesso schema
+di interfaccia ChatGPT Web resti invariato nel tempo.

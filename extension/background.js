@@ -23,6 +23,9 @@ async function recoverEligibleTabs({refreshExisting = false} = {}) {
   await Promise.allSettled(tabs
     .filter(tab => tab.id != null && tab.status === "complete" && isSupportedPageUrl(tab.url || tab.pendingUrl || ""))
     .map(async tab => {
+      if (isPromptChatTab(tab)) {
+        try { await chrome.scripting.executeScript({target: {tabId: tab.id}, files: ["chat-activity.js"]}); } catch {}
+      }
       try {
         const probe = await chrome.tabs.sendMessage(tab.id, {type: "controlProbe"});
         // A live content script can answer before it has rehydrated a context:
@@ -687,6 +690,10 @@ chrome.alarms.onAlarm.addListener(alarm => {
   runEventLoop();
 });
 
+chrome.tabs.onRemoved.addListener(tabId => {
+  api("/api/activity/web-remove", {method: "POST", body: {tab_id: tabId}}).catch(() => {});
+});
+
 chrome.tabs.onActivated.addListener(async ({tabId}) => {
   try {
     const tab = await chrome.tabs.get(tabId);
@@ -695,6 +702,9 @@ chrome.tabs.onActivated.addListener(async ({tabId}) => {
 });
 
 chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
+  if (changeInfo.url) {
+    api("/api/activity/web-remove", {method: "POST", body: {tab_id: tab.id}}).catch(() => {});
+  }
   if (!changeInfo.url && changeInfo.status !== "complete") return;
   try { await maybeCapturePromptChromeTab(tab); } catch {}
 });
@@ -723,7 +733,22 @@ chrome.commands.onCommand.addListener(async command => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     try {
-      if (message.type === "context:get") {
+      if (message.type === "activity:state") {
+        if (!sender.tab?.id || !isPromptChatTab(sender.tab)) {
+          sendResponse({ok: false, error: "not_chat_tab"});
+          return;
+        }
+        if (new URL(sender.tab.url).pathname !== new URL(message.url).pathname) {
+          sendResponse({ok: false, error: "stale_chat_url"});
+          return;
+        }
+        sendResponse(await api("/api/activity/web", {method: "POST", body: {
+          tab_id: sender.tab.id,
+          url: sender.tab.url || message.url,
+          title: message.title || sender.tab.title || "",
+          status: message.status
+        }}));
+      } else if (message.type === "context:get") {
         const tab = sender.tab || await currentTab();
         sendResponse({ok: true, context: await ensureContext(tab)});
       } else if (message.type === "context:read") {

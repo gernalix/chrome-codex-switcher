@@ -19,6 +19,8 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
 from .a11y_watch import CodexA11yWatch
+from .activity import ActivityMonitor, UUID_RE, _safe_web_url
+from .activity_ui import activity_dashboard_html
 from .broker import EventBroker
 from . import __version__
 from .store import Store
@@ -46,6 +48,7 @@ class App:
     def __init__(self, store: Store | None = None, broker: EventBroker | None = None, open_codex=None):
         self.store = store or Store(db_path())
         self.pn_cards = PnCards(self.store)
+        self.activity = ActivityMonitor()
         self._pn_signal_lock = threading.Lock()
         self._pn_signal_timer: threading.Timer | None = None
         self.broker = broker or EventBroker(on_event=self._on_pn_relevant_event)
@@ -861,6 +864,26 @@ class App:
             "title": context.get("title", ""),
         })
 
+    def open_activity(self, payload: dict[str, Any]) -> dict[str, Any]:
+        url = str(payload.get("url") or "")
+        if url.startswith("codex://threads/"):
+            thread = url.removeprefix("codex://threads/")
+            if not UUID_RE.fullmatch(thread):
+                raise ValueError("invalid_codex_thread")
+            self._open_codex(url)
+            return {"ok": True, "action": "open_desktop"}
+        safe = _safe_web_url(url)
+        if safe is None:
+            raise ValueError("invalid_chat_url")
+        # Reuse CCS's established Chrome-tab focus/open bridge.
+        context = next((c for c in self.store.list_contexts() if c["url"] == safe), None)
+        self.broker.emit("focus_chrome", {
+            "context_id": context["id"] if context else "activity:" + uuid.uuid4().hex,
+            "url": safe,
+            "title": (context or {}).get("title", ""),
+        })
+        return {"ok": True, "action": "focus_chrome_queued"}
+
     def extension_heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
         state = {
             "version": str(payload.get("version") or ""),
@@ -950,7 +973,7 @@ header{position:sticky;top:0;background:Canvas;padding:18px 18px 12px;border-bot
 .prompt-chip{display:inline-flex;align-items:center;gap:4px;font:600 .78rem/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid #7776;background:#7772;border-radius:999px;padding:4px 7px}.prompt-chip.bound{font-weight:750}
 .prompt-remove,.prompt-add{padding:1px 5px;min-width:0;border-radius:999px}.prompt-remove{border:0;background:transparent}.meta{font-size:.76rem;opacity:.58;margin-top:8px;overflow-wrap:anywhere}.buttons{display:flex;gap:7px;margin-top:10px}
 button{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid #7777;background:ButtonFace;color:ButtonText;cursor:pointer}.empty{padding:32px 12px;text-align:center;opacity:.65}
-__PN_CSS__</style></head><body><header><h1>Context Search <small id="project-nv" style="float:right;font-size:.7rem;font-weight:400;opacity:.65">__PROJECT_NV__</small></h1><input id="q" type="search" autocomplete="off" placeholder="Cerca note, PROMPT_ID, titoli Chrome/Codex…"><div id="status">Caricamento…</div></header>
+__PN_CSS__</style></head><body><header><h1>Context Search <a href="/ui/activity" style="font-size:.78rem;margin-left:10px">Elaborazioni</a> <small id="project-nv" style="float:right;font-size:.7rem;font-weight:400;opacity:.65">__PROJECT_NV__</small></h1><input id="q" type="search" autocomplete="off" placeholder="Cerca note, PROMPT_ID, titoli Chrome/Codex…"><div id="status">Caricamento…</div></header>
 <main id="list" role="listbox" aria-label="Chrome and Codex contexts"></main><script>__PN_JS__</script><script>
 const q=document.querySelector('#q'),list=document.querySelector('#list'),statusEl=document.querySelector('#status');let contexts=[],visible=[],selected=0;
 const searchable=item=>[item.prompt_id,...(item.prompt_ids||[]),item.title,item.twin?.codex_title,item.note,item.codex_note].filter(Boolean).join(' ').toLowerCase();
@@ -1135,6 +1158,10 @@ class Handler(BaseHTTPRequestHandler):
             )
             if parsed.path == "/ui/search":
                 self._html(HTTPStatus.OK, search_dashboard_html())
+            elif parsed.path == "/ui/activity":
+                self._html(HTTPStatus.OK, activity_dashboard_html())
+            elif parsed.path == "/api/activity":
+                self._json(HTTPStatus.OK, APP.activity.snapshot())
             elif ui_match:
                 prompt_id, action = ui_match.groups()
                 result = run_prompt_fallback_action(prompt_id, action)
@@ -1191,6 +1218,12 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._read_json()
             if parsed.path == "/api/context":
                 self._json(HTTPStatus.OK, {"ok": True, "context": APP.upsert_context(payload)})
+            elif parsed.path == "/api/activity/web":
+                self._json(HTTPStatus.OK, APP.activity.observe_web(payload))
+            elif parsed.path == "/api/activity/web-remove":
+                self._json(HTTPStatus.OK, APP.activity.remove_web_tab(payload))
+            elif parsed.path == "/api/activity/open":
+                self._json(HTTPStatus.OK, APP.open_activity(payload))
             elif parsed.path == "/api/context/replace-url":
                 self._json(HTTPStatus.OK, APP.replace_context_url(payload))
             elif parsed.path == "/api/pn/manual":
@@ -1259,6 +1292,7 @@ def serve() -> None:
     APP = App()
     APP.start_clipboard_watch()
     APP.start_active_thread_watch()
+    APP.activity.start()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     server.daemon_threads = True
 
@@ -1270,6 +1304,7 @@ def serve() -> None:
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
+        APP.activity.stop()
         APP.stop_active_thread_watch()
         APP.stop_clipboard_watch()
         server.server_close()

@@ -1,0 +1,183 @@
+"""Activity projection contract: only explicit transitions may notify."""
+from __future__ import annotations
+
+import json
+import sqlite3
+import tempfile
+import time
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import Mock
+
+from chrome_codex_switcher.activity import ActivityMonitor, _safe_web_url
+from chrome_codex_switcher.activity_ui import activity_dashboard_html
+from chrome_codex_switcher.broker import EventBroker
+from chrome_codex_switcher.daemon import App
+from chrome_codex_switcher.store import Store
+
+THREAD = "01a150e4-22a8-7fa0-8b70-8529bc7df1ae"
+
+
+def event(kind: str, turn: str, timestamp: float) -> str:
+    return json.dumps({
+        "type": "event_msg",
+        "timestamp": datetime.fromtimestamp(timestamp, timezone.utc).isoformat(),
+        "payload": {"type": kind, "turn_id": turn}
+    }) + "\n"
+
+
+class ActivityTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.clock_value = time.time()
+        self.sent = []
+        self.sessions = self.root / "sessions"
+        self.sessions.mkdir()
+        self.db = self.root / "state.sqlite"
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("""CREATE TABLE threads(
+                id TEXT, title TEXT, name TEXT, rollout_path TEXT,
+                archived INTEGER, recency_at_ms INTEGER, updated_at_ms INTEGER, created_at_ms INTEGER,
+                source TEXT, thread_source TEXT, originator TEXT
+            )""")
+        self.monitor = ActivityMonitor(
+            session_db=self.db, sessions_root=self.sessions,
+            sender=self.sent.append, clock=lambda: self.clock_value
+        )
+
+    def record_thread(self, path: Path, *, source="vscode", originator="Codex Desktop",
+                      thread_source="user", title="Sistema di backup"):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute(
+                "INSERT INTO threads VALUES (?, ?, NULL, ?, 0, ?, ?, ?, ?, ?, ?)",
+                (THREAD, title, str(path), int(self.clock_value * 1000),
+                 int(self.clock_value * 1000), int(self.clock_value * 1000),
+                 source, thread_source, originator)
+            )
+
+    def test_web_activity_and_single_completion_notification(self):
+        url = "https://chatgpt.com/c/abc?a=2#private"
+        base = {"url": url, "title": "Chat test", "tab_id": 22}
+        self.monitor.observe_web({**base, "status": "idle"})
+        self.assertEqual([], self.sent)
+        self.assertEqual(0, self.monitor.snapshot()["active"])
+        self.monitor.observe_web({**base, "status": "running"})
+        self.assertEqual(1, self.monitor.snapshot()["active"])
+        self.monitor.observe_web({**base, "status": "running"})
+        self.monitor.observe_web({**base, "status": "idle"})
+        self.monitor.observe_web({**base, "status": "idle"})
+        self.assertEqual(1, len(self.sent))
+        self.assertEqual("https://chatgpt.com/c/abc", self.sent[0]["url"])
+        self.assertEqual(1, self.monitor.snapshot()["recent"])
+
+    def test_tab_close_and_navigation_never_fake_completion(self):
+        payload = {"tab_id": 8, "title": "Chat", "status": "running"}
+        self.monitor.observe_web({**payload, "url": "https://chatgpt.com/c/abc"})
+        self.monitor.observe_web({**payload, "url": "https://chatgpt.com/c/def"})
+        self.monitor.remove_web_tab({"tab_id": 8})
+        self.assertEqual([], self.sent)
+        self.assertEqual([], self.monitor.snapshot()["chats"])
+
+    def test_stale_web_tab_never_fires_finished(self):
+        self.monitor.observe_web({"tab_id": 8, "title": "Chat", "status": "running",
+                                  "url": "https://chatgpt.com/c/abc"})
+        self.clock_value += 121
+        self.assertEqual(0, self.monitor.snapshot()["active"])
+        self.assertEqual([], self.sent)
+
+    def test_reject_unsafe_web_urls(self):
+        for url in ("http://chatgpt.com/c/abc", "https://fakechatgpt.com/c/abc",
+                    "https://chatgpt.com.evil.test/c/abc", "https://chatgpt.com/settings"):
+            self.assertIsNone(_safe_web_url(url))
+        with self.assertRaises(ValueError):
+            self.monitor.observe_web({"tab_id": 1, "status": "running", "url": "https://evil.test/"})
+
+    def test_desktop_initial_state_new_completion_and_second_turn(self):
+        path = self.sessions / (THREAD + ".jsonl")
+        path.write_text(event("task_started", "turn-one", self.clock_value - 20))
+        self.record_thread(path)
+        self.monitor.poll_desktop()
+        self.assertEqual(1, self.monitor.snapshot()["active"])
+        self.assertEqual([], self.sent)
+
+        with path.open("a") as f:
+            f.write(event("task_complete", "turn-one", self.clock_value + 1))
+        self.monitor.poll_desktop()
+        self.monitor.poll_desktop()
+        self.assertEqual(1, len(self.sent))
+        self.assertEqual("finished", self.sent[0]["status"])
+        self.assertEqual("codex://threads/" + THREAD, self.sent[0]["url"])
+
+        with path.open("a") as f:
+            f.write(event("task_started", "turn-two", self.clock_value + 2))
+            f.write(event("task_complete", "turn-two", self.clock_value + 3))
+        self.monitor.poll_desktop()
+        self.assertEqual(2, len(self.sent))
+
+    def test_old_completed_session_never_notifies(self):
+        path = self.sessions / "old.jsonl"
+        path.write_text(event("task_started", "t1", self.clock_value - 90)
+                        + event("task_complete", "t1", self.clock_value - 89))
+        self.record_thread(path)
+        self.monitor.poll_desktop()
+        self.assertEqual(0, len(self.sent))
+
+    def test_incomplete_jsonl_is_retried_without_false_notification(self):
+        path = self.sessions / "partial.jsonl"
+        path.write_text(event("task_started", "t1", self.clock_value - 5))
+        self.record_thread(path)
+        self.monitor.poll_desktop()
+        complete = event("task_complete", "t1", self.clock_value + 1)
+        with path.open("a") as f:
+            f.write(complete[:-3])
+        self.monitor.poll_desktop()
+        self.assertEqual([], self.sent)
+        with path.open("a") as f:
+            f.write(complete[-3:])
+        self.monitor.poll_desktop()
+        self.assertEqual(1, len(self.sent))
+
+    def test_existing_partial_jsonl_can_complete_after_first_scan(self):
+        path = self.sessions / "partial-first.jsonl"
+        first = event("task_started", "t1", self.clock_value + 1)
+        path.write_text(first[:-4])
+        self.record_thread(path)
+        self.monitor.poll_desktop()
+        self.assertEqual([], self.sent)
+        with path.open("a") as f:
+            f.write(first[-4:])
+        self.monitor.poll_desktop()
+        self.assertEqual(1, self.monitor.snapshot()["active"])
+
+    def test_only_user_visible_desktop_threads_are_selected(self):
+        path = self.sessions / "cli.jsonl"
+        path.write_text(event("task_started", "t1", self.clock_value - 10))
+        self.record_thread(path, source="cli", originator="codex-tui")
+        self.monitor.poll_desktop()
+        self.assertEqual(0, self.monitor.snapshot()["active"])
+
+    def test_no_untrusted_path(self):
+        external = self.root / "elsewhere.jsonl"
+        external.write_text(event("task_started", "t1", self.clock_value))
+        self.record_thread(external)
+        self.monitor.poll_desktop()
+        self.assertEqual(0, self.monitor.snapshot()["active"])
+
+    def test_page_and_open_routing(self):
+        self.assertIn("/api/activity/open", activity_dashboard_html())
+        app = App(Store(self.root / "ccs.sqlite"), EventBroker(), Mock())
+        app.open_activity({"url": "codex://threads/" + THREAD})
+        app._open_codex.assert_called_once_with("codex://threads/" + THREAD)
+        result = app.open_activity({"url": "https://chatgpt.com/c/abc"})
+        self.assertEqual("focus_chrome_queued", result["action"])
+        with self.assertRaises(ValueError):
+            app.open_activity({"url": "codex://threads/injection"})
+        with self.assertRaises(ValueError):
+            app.open_activity({"url": "file:///etc/passwd"})
+
+
+if __name__ == "__main__":
+    unittest.main()
