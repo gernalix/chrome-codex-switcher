@@ -70,6 +70,15 @@
         "http://127.0.0.1:43817/*",
         "http://localhost:43817/*"
       ]
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "chat-activity.js"
+      ],
+      "run_at": "document_idle"
     }
   ]
 }
