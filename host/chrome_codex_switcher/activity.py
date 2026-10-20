@@ -127,7 +127,8 @@ def telegram_send(item: dict) -> None:
             if "=" in line and not line.lstrip().startswith("#"):
                 key, value = line.split("=", 1)
                 settings[key.strip()] = value.strip().strip("'\"")
-        token, chat_id = settings["TELEGRAM_BOT_TOKEN"], settings["TELEGRAM_CHAT_ID"]
+        prefix = "TELEGRAM_INSERT_BOT_NOISY"
+        token, chat_id = settings[prefix + "_BOT_TOKEN"], settings[prefix + "_CHAT_ID"]
         if not token or not chat_id:
             raise ValueError("missing_credentials")
         label = "Web" if item["source"] == "web" else "Desktop"

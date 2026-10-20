@@ -8,9 +8,9 @@ import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch, mock_open
 
-from chrome_codex_switcher.activity import ActivityMonitor, _safe_web_url
+from chrome_codex_switcher.activity import ActivityMonitor, _safe_web_url, telegram_send
 from chrome_codex_switcher.activity_ui import activity_dashboard_html
 from chrome_codex_switcher.broker import EventBroker
 from chrome_codex_switcher.daemon import App
@@ -57,6 +57,23 @@ class ActivityTests(unittest.TestCase):
                  int(self.clock_value * 1000), int(self.clock_value * 1000),
                  source, thread_source, originator)
             )
+
+    def test_telegram_uses_existing_personal_notification_transport(self):
+        settings = ("TELEGRAM_BOT_TOKEN=unrelated\nTELEGRAM_CHAT_ID=old\n"
+                    "TELEGRAM_INSERT_BOT_NOISY_BOT_TOKEN=notification-token\n"
+                    "TELEGRAM_INSERT_BOT_NOISY_CHAT_ID=123\n")
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b'{"ok":true}'
+        with patch.dict('os.environ', {'CREDENTIALS_DIRECTORY': '/credentials'}), \
+             patch('pathlib.Path.read_text', return_value=settings), \
+             patch('chrome_codex_switcher.activity.urlopen', return_value=response) as send:
+            telegram_send({'source':'web', 'status':'finished', 'title':'Test',
+                           'url':'https://chatgpt.com/c/test'})
+        request = send.call_args.args[0]
+        self.assertIn('notification-token', request.full_url)
+        self.assertEqual('123', json.loads(request.data)['chat_id'])
 
     def test_web_activity_and_single_completion_notification(self):
         url = "https://chatgpt.com/c/abc?a=2#private"
