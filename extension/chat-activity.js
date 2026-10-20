@@ -17,6 +17,7 @@
 
   const generating = () => Boolean(document.querySelector([
     'button[data-testid="stop-button"]',
+    'button[aria-label="Stop"]',
     'button[aria-label="Stop generating"]',
     'button[aria-label="Stop streaming"]',
     'button[aria-label="Arresta la generazione"]',
