@@ -28,7 +28,7 @@ small{font-size:.78rem;opacity:.64}
 <body><header><h1>ChatGPT · Elaborazioni</h1><p>Web e Desktop nello stesso posto. Stato rilevato, non dedotto dalla cronologia.</p>
 <div class="toolbar"><input id="filter" type="search" placeholder="Filtra per titolo…" aria-label="Filtra chat">
 <select id="source" aria-label="Origine"><option value="all">Web + Desktop</option><option value="web">Solo Web</option><option value="desktop">Solo Desktop</option></select>
-<a href="/ui/search">Contesti e note</a></div><div id="count">Caricamento…</div></header>
+<a href="/ui/search">Contesti e note</a></div><div id="count">Caricamento…</div><div id="delivery" class="meta" aria-live="polite"></div></header>
 <main><section class="group"><h2>In elaborazione</h2><div id="running"></div></section>
 <section class="group"><h2>Terminate di recente <small>(ultimi 30 minuti)</small></h2><div id="finished"></div></section>
 <small>Web: sono osservabili soltanto le chat aperte in Chrome con l'estensione attiva. Schede chiuse o non osservabili non vengono segnate come terminate. Desktop: il segnale viene dai file JSONL locali; un'elaborazione senza nuovi eventi per oltre un'ora non viene dichiarata ancora attiva.</small></main>
@@ -66,6 +66,10 @@ function render(){
   else{const empty=document.createElement('div');empty.className='empty';empty.textContent=status==='running'?'Nessuna elaborazione osservata':'Nessuna elaborazione terminata di recente';container.append(empty)}
  }
  document.querySelector('#count').textContent=snapshot.active+' in elaborazione · '+snapshot.recent+' terminate di recente';
+ const delivery=snapshot.notification_delivery||{};
+ const label=({accepted:'Ultimo invio Telegram accettato',rejected:'Ultimo invio Telegram rifiutato',uncertain:'Esito dell’ultimo invio Telegram incerto',unavailable:'Invio Telegram non disponibile'})[delivery.status]||'Nessun invio Telegram ancora verificato';
+ document.querySelector('#delivery').textContent=label+(delivery.observed_at?' · '+new Date(delivery.observed_at*1000).toLocaleString():'');
+
 }
 async function refresh(){
  try{const r=await fetch('/api/activity',{cache:'no-store'});if(!r.ok)throw Error('bridge offline');snapshot=await r.json();render()}
