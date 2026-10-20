@@ -163,7 +163,54 @@ class ActivityTests(unittest.TestCase):
             f.write(event("task_started", "turn-two", self.clock_value + 2))
             f.write(event("task_complete", "turn-two", self.clock_value + 3))
         self.monitor.poll_desktop()
-        self.assertEqual(2, len(self.sent))
+        self.assertEqual(1, len(self.sent))  # Same Telegram text, despite a new turn ID.
+
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("UPDATE threads SET title=? WHERE id=?", ("Nuovo compito", THREAD))
+        with path.open("a") as f:
+            f.write(event("task_started", "turn-three", self.clock_value + 4))
+            f.write(event("task_complete", "turn-three", self.clock_value + 5))
+        self.monitor.poll_desktop()
+        self.assertEqual(2, len(self.sent))  # Changed message is still delivered.
+
+    def test_identical_desktop_notifications_stay_suppressed_after_restart(self):
+        path = self.sessions / (THREAD + ".jsonl")
+        path.write_text(event("task_started", "one", self.clock_value - 10))
+        self.record_thread(path)
+        store = Store(self.root / "activity-notifications.sqlite")
+        get = lambda: store.get_meta("activity_telegram_desktop_notified")
+        put = lambda state: store.set_meta("activity_telegram_desktop_notified", state)
+        kwargs = dict(session_db=self.db, sessions_root=self.sessions,
+                      sender=self.sent.append, notification_state_get=get,
+                      notification_state_put=put)
+        monitor = ActivityMonitor(**kwargs, clock=lambda: self.clock_value)
+        monitor.poll_desktop()
+        with path.open("a") as f:
+            f.write(event("task_complete", "one", self.clock_value + 1))
+        monitor.poll_desktop()
+        self.assertEqual(1, len(self.sent))
+        self.assertNotIn("Sistema di backup", json.dumps(get()))  # No title stored.
+
+        restarted = ActivityMonitor(**kwargs, clock=lambda: self.clock_value + 2)
+        restarted.poll_desktop()
+        with path.open("a") as f:
+            f.write(event("task_started", "two", self.clock_value + 3))
+            f.write(event("task_complete", "two", self.clock_value + 4))
+        restarted.poll_desktop()
+        self.assertEqual(1, len(self.sent))
+
+    def test_notification_state_persistence_failure_fails_closed(self):
+        path = self.sessions / (THREAD + ".jsonl")
+        path.write_text(event("task_started", "one", self.clock_value - 10))
+        self.record_thread(path)
+        monitor = ActivityMonitor(session_db=self.db, sessions_root=self.sessions,
+            sender=self.sent.append, clock=lambda: self.clock_value,
+            notification_state_put=Mock(side_effect=sqlite3.OperationalError("locked")))
+        monitor.poll_desktop()
+        with path.open("a") as f:
+            f.write(event("task_complete", "one", self.clock_value + 1))
+        monitor.poll_desktop()
+        self.assertEqual([], self.sent)
 
     def test_old_completed_session_never_notifies(self):
         path = self.sessions / "old.jsonl"
