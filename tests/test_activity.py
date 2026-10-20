@@ -65,7 +65,7 @@ class ActivityTests(unittest.TestCase):
         response = Mock()
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
-        response.read.return_value = b'{"ok":true}'
+        response.read.return_value = b'{"ok":true,"result":{"message_id":123}}'
         with patch.dict('os.environ', {'CREDENTIALS_DIRECTORY': '/credentials'}), \
              patch('pathlib.Path.read_text', return_value=settings), \
              patch('chrome_codex_switcher.activity.urlopen', return_value=response) as send:
@@ -74,6 +74,37 @@ class ActivityTests(unittest.TestCase):
         request = send.call_args.args[0]
         self.assertIn('notification-token', request.full_url)
         self.assertEqual('123', json.loads(request.data)['chat_id'])
+
+    def test_delivery_receipt_survives_monitor_restart_without_message_text(self):
+        delivery_store = Store(self.root / "notification-receipts.sqlite")
+        item = {'source':'desktop', 'status':'finished', 'title':'private title',
+                'url':'codex://threads/' + THREAD}
+        monitor = ActivityMonitor(sender=self.sent.append,
+            delivery_put=lambda receipt: delivery_store.set_meta("delivery",receipt))
+        with patch('chrome_codex_switcher.activity.telegram_send', return_value={
+            'status':'accepted','message_id':123}):
+            monitor._deliver(item)
+        reopened_store = Store(delivery_store.path)
+        restarted = ActivityMonitor(sender=self.sent.append,
+            delivery_get=lambda: reopened_store.get_meta("delivery"))
+        receipt = restarted.snapshot()['notification_delivery']
+        self.assertEqual(receipt['status'],'accepted')
+        self.assertEqual(receipt['message_id'],123)
+        self.assertNotIn('private title',json.dumps(receipt))
+
+    def test_missing_credentials_and_timeout_are_not_reported_as_delivery(self):
+        from urllib.error import URLError
+        with patch.dict('os.environ', {}, clear=True):
+            self.assertEqual(telegram_send({})['status'],'unavailable')
+        settings = ('TELEGRAM_INSERT_BOT_NOISY_BOT_TOKEN=test\n'
+                    'TELEGRAM_INSERT_BOT_NOISY_CHAT_ID=123\n')
+        with patch.dict('os.environ', {'CREDENTIALS_DIRECTORY':'/credentials'}), \
+             patch('pathlib.Path.read_text', return_value=settings), \
+             patch('chrome_codex_switcher.activity.urlopen', side_effect=URLError('timeout')) as send:
+            receipt=telegram_send({'source':'web','status':'finished','title':'Test',
+                                   'url':'https://chatgpt.com/c/test'})
+        self.assertEqual(receipt['status'],'uncertain')
+        self.assertEqual(send.call_count,1)
 
     def test_web_activity_and_single_completion_notification(self):
         url = "https://chatgpt.com/c/abc?a=2#private"

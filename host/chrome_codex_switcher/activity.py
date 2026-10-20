@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
 TERMINAL = {"task_complete": "finished", "turn_aborted": "interrupted", "task_failed": "interrupted"}
@@ -115,11 +116,11 @@ def _display_title(title: object, fallback: str) -> str:
     return cleaned[:140] or fallback
 
 
-def telegram_send(item: dict) -> None:
+def telegram_send(item: dict) -> dict:
     """Use the existing user's Telegram credential only through systemd LoadCredential."""
     directory = os.environ.get("CREDENTIALS_DIRECTORY")
     if not directory:
-        return
+        return {"status": "unavailable", "reason": "credentials_unavailable"}
     path = Path(directory) / "telegram.env"
     try:
         settings = {}
@@ -136,12 +137,23 @@ def telegram_send(item: dict) -> None:
         message = f"ChatGPT {label}: {item['title']} — {state}\n{item['url']}"
         body = json.dumps({"chat_id": chat_id, "text": message, "disable_web_page_preview": True}).encode()
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        with urlopen(Request(url, data=body, headers={"Content-Type": "application/json"}), timeout=12) as response:
-            if json.load(response).get("ok") is not True:
-                raise ValueError("telegram_rejected")
     except (OSError, ValueError, KeyError, TypeError):
-        # Never log request URLs, tokens, chat IDs or response bodies.
-        print("CCS activity: Telegram delivery unavailable", file=sys.stderr)
+        return {"status": "unavailable", "reason": "credentials_or_payload_unavailable"}
+    try:
+        with urlopen(Request(url, data=body, headers={"Content-Type": "application/json"}), timeout=12) as response:
+            result = json.load(response)
+        message_id = (result.get("result") or {}).get("message_id")
+        if result.get("ok") is True and type(message_id) is int:
+            return {"status": "accepted", "message_id": message_id}
+        return {"status": "uncertain", "reason": "unverified_response"}
+    except HTTPError as exc:
+        # Do not log the URL or response: either may contain private data.
+        return {"status": "rejected" if 400 <= exc.code < 500 else "uncertain",
+                "http_status": exc.code}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        # A transport timeout may occur after Telegram accepted the message.
+        # Never automatically retry an ambiguous send and risk a duplicate.
+        return {"status": "uncertain", "reason": "transport_or_response_unavailable"}
 
 
 class ActivityMonitor:
@@ -152,12 +164,17 @@ class ActivityMonitor:
         sessions_root: Path | None = None,
         sender: Callable[[dict], None] | None = None,
         clock: Callable[[], float] = time.time,
+        delivery_get: Callable[[], dict | None] | None = None,
+        delivery_put: Callable[[dict], None] | None = None,
     ):
         self.session_db = session_db or Path.home() / ".codex/state_5.sqlite"
         self.sessions_root = (sessions_root or Path.home() / ".codex/sessions").resolve()
         self.clock = clock
         self.started_at = clock()
-        self.sender = sender or (lambda item: threading.Thread(target=telegram_send, args=(item,), daemon=True).start())
+        self.sender = sender or self._send_async
+        self.delivery_put = delivery_put
+        saved_delivery = delivery_get() if delivery_get else None
+        self._delivery = saved_delivery if isinstance(saved_delivery, dict) else {"status": "unknown"}
         self._web: dict[int, dict] = {}
         self._desktop: dict[str, dict] = {}
         self._cursors: dict[str, int] = {}
@@ -166,6 +183,23 @@ class ActivityMonitor:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._worker: threading.Thread | None = None
+
+    def _send_async(self, item: dict) -> None:
+        threading.Thread(target=self._deliver, args=(item,), daemon=True,
+                         name="ccs-telegram").start()
+
+    def _deliver(self, item: dict) -> None:
+        receipt = {**telegram_send(item), "observed_at": self.clock(),
+                   "source": item["source"], "url": item["url"]}
+        if self.delivery_put:
+            try:
+                self.delivery_put(receipt)
+            except (OSError, sqlite3.Error):
+                receipt["receipt_persistence"] = "unavailable"
+        with self._lock:
+            self._delivery = receipt
+        if receipt["status"] != "accepted":
+            print("CCS activity: Telegram delivery " + receipt["status"], file=sys.stderr)
 
     def start(self) -> None:
         if self._worker and self._worker.is_alive():
@@ -327,4 +361,5 @@ class ActivityMonitor:
                     rows.append(row.copy())
         rows.sort(key=lambda r: (r["status"] != "running", -r["updated_at"]))
         return {"ok": True, "active": sum(r["status"] == "running" for r in rows),
-                "recent": sum(r["status"] != "running" for r in rows), "chats": rows}
+                "recent": sum(r["status"] != "running" for r in rows), "chats": rows,
+                "notification_delivery": self._delivery.copy()}

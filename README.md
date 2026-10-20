@@ -278,3 +278,11 @@ Aggiornamento ogni 4 secondi; dati e stati non vengono copiati in MegaVault.
 Non è possibile conoscere in modo affidabile lo stato delle chat **Web**
 chiuse/non montate usando la sola estensione, né garantire che lo stesso schema
 di interfaccia ChatGPT Web resti invariato nel tempo.
+
+
+The activity dashboard distinguishes the last Telegram send accepted by the
+provider from rejected, unavailable and uncertain outcomes. It preserves only
+the last receipt (status, time, source/chat link and Telegram message ID) in the
+existing private CCS store; message text and credentials are excluded. Acceptance
+confirms the API result, not that a particular device displayed the notification.
+Ambiguous timeouts are not automatically retried, to avoid duplicate sends.

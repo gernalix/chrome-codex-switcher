@@ -48,7 +48,10 @@ class App:
     def __init__(self, store: Store | None = None, broker: EventBroker | None = None, open_codex=None):
         self.store = store or Store(db_path())
         self.pn_cards = PnCards(self.store)
-        self.activity = ActivityMonitor()
+        self.activity = ActivityMonitor(
+            delivery_get=lambda: self.store.get_meta("activity_telegram_delivery"),
+            delivery_put=lambda receipt: self.store.set_meta("activity_telegram_delivery", receipt),
+        )
         self._pn_signal_lock = threading.Lock()
         self._pn_signal_timer: threading.Timer | None = None
         self.broker = broker or EventBroker(on_event=self._on_pn_relevant_event)
