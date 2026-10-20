@@ -270,8 +270,11 @@ Aggiornamento ogni 4 secondi; dati e stati non vengono copiati in MegaVault.
   `~/.codex/sessions`. Lo stato non è la classificazione PASS/FAIL del task.
   Dopo un'ora senza aggiornamenti una run non è più dichiarata attiva.
 - **Telegram:** una notifica per fine/interruzione osservata, con titolo e link;
-  nessuna notifica per ripristino storico, pagina inizialmente inattiva,
-  chiusura scheda o disconnessione. Il servizio user systemd usa
+  per Desktop, messaggi identici della stessa chat vengono soppressi anche
+  fra turni automatici e dopo il riavvio del servizio. Un titolo o uno stato
+  diverso consentono una nuova notifica. Nessuna notifica per ripristino storico,
+  pagina inizialmente inattiva, chiusura scheda o disconnessione.
+  Il servizio user systemd usa
   `LoadCredential=telegram.env` tramite la credenziale utente già esistente.
   In sua assenza la dashboard continua a funzionare, ma la notifica non parte.
 

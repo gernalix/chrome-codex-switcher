@@ -5,6 +5,7 @@ a task registry or an inference of success/failure from a final assistant text.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from contextlib import closing
@@ -166,6 +167,8 @@ class ActivityMonitor:
         clock: Callable[[], float] = time.time,
         delivery_get: Callable[[], dict | None] | None = None,
         delivery_put: Callable[[dict], None] | None = None,
+        notification_state_get: Callable[[], dict | None] | None = None,
+        notification_state_put: Callable[[dict], None] | None = None,
     ):
         self.session_db = session_db or Path.home() / ".codex/state_5.sqlite"
         self.sessions_root = (sessions_root or Path.home() / ".codex/sessions").resolve()
@@ -173,6 +176,13 @@ class ActivityMonitor:
         self.started_at = clock()
         self.sender = sender or self._send_async
         self.delivery_put = delivery_put
+        self.notification_state_put = notification_state_put
+        saved_notifications = notification_state_get() if notification_state_get else None
+        self._desktop_notifications: dict[str, str] = (
+            {k: v for k, v in saved_notifications.items()
+             if isinstance(k, str) and UUID_RE.fullmatch(k) and isinstance(v, str)}
+            if isinstance(saved_notifications, dict) else {}
+        )
         saved_delivery = delivery_get() if delivery_get else None
         self._delivery = saved_delivery if isinstance(saved_delivery, dict) else {"status": "unknown"}
         self._web: dict[int, dict] = {}
@@ -293,6 +303,23 @@ class ActivityMonitor:
             self._notified.add(fingerprint)
             # An old completion encountered at startup must never fire a notification.
             if timestamp > self.started_at:
+                # Periodic Codex turns can complete indefinitely under one chat title.
+                # The Telegram text is identical even when each turn has a new ID.
+                signature = hashlib.sha256((title + "\0" + new_status).encode()).hexdigest()
+                if self._desktop_notifications.get(tid) == signature:
+                    return None
+                updated = {k: v for k, v in self._desktop_notifications.items() if k != tid}
+                updated[tid] = signature
+                if len(updated) > 2000:
+                    updated = dict(list(updated.items())[-1000:])
+                if self.notification_state_put:
+                    try:
+                        # Claim before delivery: a restart/uncertain API response must
+                        # not resend the same visible Telegram message.
+                        self.notification_state_put(updated)
+                    except (OSError, sqlite3.Error):
+                        return None
+                self._desktop_notifications = updated
                 return row.copy()
         return None
 

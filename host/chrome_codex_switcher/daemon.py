@@ -51,6 +51,8 @@ class App:
         self.activity = ActivityMonitor(
             delivery_get=lambda: self.store.get_meta("activity_telegram_delivery"),
             delivery_put=lambda receipt: self.store.set_meta("activity_telegram_delivery", receipt),
+            notification_state_get=lambda: self.store.get_meta("activity_telegram_desktop_notified"),
+            notification_state_put=lambda state: self.store.set_meta("activity_telegram_desktop_notified", state),
         )
         self._pn_signal_lock = threading.Lock()
         self._pn_signal_timer: threading.Timer | None = None
