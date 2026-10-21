@@ -140,6 +140,14 @@ Canonical link synchronization still requires a note first line **exactly** `Pn`
 
 Use **Alt+Shift+V** to show/hide the note in the active Chrome tab.
 
+Browser agents can press **Alt+Shift+H** before interacting with a page and again
+afterwards to temporarily hide/restore only that tab’s overlay. Other tabs are unaffected. This page-level shortcut
+works with browser automation, which may not invoke Chrome extension commands.
+It leaves the saved visibility, text and geometry unchanged; a full page reload
+also clears the temporary pause. Normal mouse editing, dragging, resizing and
+buttons remain unchanged. Agents should restore the overlay when done; an
+interrupted session can be restored with the same shortcut or a page reload.
+
 ## CLI
 
 ```bash

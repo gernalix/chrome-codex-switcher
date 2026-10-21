@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from selenium import webdriver
+from selenium.common.exceptions import ElementClickInterceptedException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
@@ -617,6 +618,57 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self.assertEqual(["🔗","🗑","❌"],layout()["controls"])
         self.wait.until(lambda _: self.driver.execute_script("return fixtureMessages.some(m=>m.type==='context:note'&&m.contextId==='overlay-fixture'&&m.note==='pending old context')"))
         self.assertEqual("Second note",layout()["note"])
+
+    def test_automation_pause_preserves_normal_overlay_input_and_saved_state(self) -> None:
+        self.driver.get(self._url("automation-pause", "overlay"))
+        self._wait_extension()
+        self.driver.execute_script("document.getElementById('chrome-codex-switcher-host').remove()")
+        for name in ("tests/e2e/overlay_fixture.js", "extension/content.js"):
+            self.driver.execute_script((ROOT / name).read_text())
+        self.wait.until(lambda _: self._snapshot()["note"] == "Chrome text")
+        root="document.getElementById('chrome-codex-switcher-host').shadowRoot"
+        note=self.driver.execute_script(f"return {root}.querySelector('.note')")
+        # The ordinary mouse gesture remains fully usable, without modifiers.
+        ActionChains(self.driver).move_to_element(note).click().send_keys(' edited').perform()
+        self.assertEqual('Chrome text edited', self._snapshot()['note'])
+        self.wait.until(lambda _: self.driver.execute_script("return fixtureContext.note") == 'Chrome text edited')
+        before=self._snapshot()
+        self.driver.execute_script("""
+            const h=document.getElementById('chrome-codex-switcher-host');
+            const r=h.shadowRoot.querySelector('.note').getBoundingClientRect();
+            const b=document.createElement('button'); b.id='covered-page-button';
+            b.textContent='Page clicks: 0';
+            b.style.cssText=`position:fixed;left:${r.x+10}px;top:${r.y+10}px;width:140px;height:28px`;
+            b.onclick=()=>b.textContent='Page clicks: '+(Number(b.textContent.split(': ')[1])+1);
+            document.body.append(b);
+        """)
+        button=self.driver.find_element('id', 'covered-page-button')
+        with self.assertRaises(ElementClickInterceptedException):
+            button.click()
+
+        def shortcut():
+            ActionChains(self.driver).key_down(Keys.ALT).key_down(Keys.SHIFT).send_keys('h').key_up(Keys.SHIFT).key_up(Keys.ALT).perform()
+
+        shortcut()
+        self.assertEqual('hidden', self.driver.execute_script("return getComputedStyle(document.getElementById('chrome-codex-switcher-host')).visibility"))
+        button.click()  # Real hit-tested input, without force or synthetic click.
+        self.assertEqual('Page clicks: 1', button.text)
+        self.assertEqual(before, self._snapshot())
+        self.assertFalse(self.driver.execute_script('return fixtureContext.hidden || false'))
+        # Background refresh must not reintroduce the blocker during automation.
+        self.driver.execute_script('fixtureRefresh()')
+        button.click()
+        self.assertEqual('Page clicks: 2', button.text)
+        shortcut()
+        self.assertEqual('visible', self.driver.execute_script("return getComputedStyle(document.getElementById('chrome-codex-switcher-host')).visibility"))
+        self.assertEqual(before, self._snapshot())
+        close=self.driver.execute_script(f"return {root}.querySelector('.close')")
+        close.click()
+        self.assertTrue(self._snapshot()['hidden'])
+        # A pre-existing saved hidden preference must survive pause/resume too.
+        shortcut()
+        shortcut()
+        self.assertTrue(self._snapshot()['hidden'])
 
     def test_legacy_collapsed_preference_does_not_hide_the_note(self) -> None:
         self.driver.get(self._url("legacy-collapse", "seed"))
