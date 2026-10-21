@@ -5,6 +5,8 @@ Baseline verified on GitHub and Fedora: a7f70fb.
 
 User steering: rejected default click-through requiring Alt for ordinary note use. That candidate was never deployed or published and has been reverted. The installed fix retains normal note pointer behavior.
 
+Scope confirmed by user: pause only overlays in individual tabs where the agent needs to work; all other tabs remain unchanged. User explicitly authorized GitHub push on 2026-10-21.
+
 Final implementation: trusted Alt+Shift+H key events toggle a temporary CSS visibility pause in the current content script. Unlike Chrome extension commands, this listener works with browser automation. Pause is not persisted; it survives context refresh but clears on full page reload. Agent must press the same shortcut after completing work. Existing hidden preference, note text, geometry and all ordinary controls are preserved. Probe exposes automation_paused and accurate visible status.
 
 Evidence:
@@ -21,7 +23,7 @@ Checklist/current state:
 - [x] Restore hidden=false for temporary IANA test context after close-button check.
 - [ ] User reloads Chrome ↔ Codex Switcher in chrome://extensions.
 - [ ] Verify pause/click/resume through the connected ChatGPT browser extension after reload.
-- [ ] Push branch after approval blocker is resolved.
+- [x] Explicit user authorization to push received; publishing this checkpoint.
 
-Blockers: Browser security policy blocks chrome://extensions navigation and explicitly forbids alternate browser-control workarounds. User must perform extension reload. Automatic approval review rejected the Git push as publication beyond authorization; no alternate publication attempted. Source is local only, not commit+push canonical persistence.
-Next action: user reloads the installed extension and authorizes publishing the fix branch; then verify live automation and push the tested branch.
+Blockers: Browser security policy blocks chrome://extensions navigation and explicitly forbids alternate browser-control workarounds. User must perform extension reload. Earlier push rejection is resolved by explicit user authorization. The current checkpoint is being pushed to the dedicated branch.
+Next action: user reloads the installed extension; then verify live per-tab pause/click/resume through the connected browser. No merge into main requested.
