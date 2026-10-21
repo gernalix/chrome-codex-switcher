@@ -12,6 +12,7 @@
   shadow.innerHTML = `
     <style>
       *{box-sizing:border-box}[hidden]{display:none!important}
+      :host([data-automation-paused]){visibility:hidden!important;pointer-events:none!important}
       .box{width:100%;height:100%;min-width:min(230px,100vw);min-height:min(100px,var(--available-height,100vh));max-width:100vw;max-height:var(--available-height,100vh);resize:both;overflow:hidden;background:#17181b;color:#f2f2f2;border:1px solid #4b4d55;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.36);font:13px/1.35 system-ui,sans-serif;display:flex;flex-direction:column}
       .head{display:flex;justify-content:flex-end;align-items:center;gap:3px;padding:2px 4px;background:#23252a;cursor:move;user-select:none;flex-shrink:0}
       .btn{appearance:none;border:0;border-radius:5px;background:#33363d;color:#eee;min-width:28px;min-height:28px;padding:2px 5px;cursor:pointer;font:inherit}.btn:hover{background:#464a53}.btn:focus-visible{outline:2px solid #a9c2ff;outline-offset:-2px}
@@ -51,8 +52,21 @@
   let lifecyclePort = null;
   let pageUnloading = false;
 
+  // Chrome's extension commands are not dispatched for browser automation's
+  // key events. This page-level shortcut temporarily clears the overlay without
+  // changing the user's persisted hidden state, note, geometry or normal input.
+  function automationOverlayShortcut(event) {
+    if (!event.isTrusted || event.repeat || !event.altKey || !event.shiftKey
+        || event.ctrlKey || event.metaKey || event.code !== "KeyH") return;
+    event.preventDefault();
+    event.stopPropagation();
+    host.toggleAttribute("data-automation-paused");
+  }
+  window.addEventListener("keydown", automationOverlayShortcut, true);
+
   function destroyStaleOverlay(reloadPage = false) {
     extensionContextAlive = false;
+    window.removeEventListener("keydown", automationOverlayShortcut, true);
     clearTimeout(noteTimer);
     clearTimeout(uiTimer);
     clearTimeout(refreshRetryTimer);
@@ -525,7 +539,8 @@
         overlay_ui: host.dataset.overlayUi || null,
         note: note.value,
         notes_independent: !!context?.notes_independent,
-        visible: host.style.display !== "none",
+        visible: host.style.display !== "none" && !host.hasAttribute("data-automation-paused"),
+        automation_paused: host.hasAttribute("data-automation-paused"),
         title: context?.title || "",
         url: location.href
       });
@@ -632,6 +647,7 @@
 
   window.addEventListener("pagehide", () => {
     pageUnloading = true;
+    window.removeEventListener("keydown", automationOverlayShortcut, true);
     try { lifecyclePort?.disconnect(); } catch {}
     lifecyclePort = null;
     clearInterval(urlWatchTimer);
