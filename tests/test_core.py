@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
+from chrome_codex_switcher.a11y_watch import CodexA11yWatch
 from chrome_codex_switcher.broker import EventBroker
 from chrome_codex_switcher.daemon import App, prompt_action_fallback_html, search_dashboard_html
 from chrome_codex_switcher.store import Store
@@ -39,6 +40,20 @@ class AppTests(unittest.TestCase):
         else:
             os.environ["CCS_OVERLAY_PATH"] = self._old_overlay_path
         self.tmp.cleanup()
+
+    def test_a11y_watcher_delivers_title_and_exact_thread_to_app(self):
+        callback = Mock(wraps=self.app.handle_codex_ui_state)
+        watcher = CodexA11yWatch(callback, stable_samples=1)
+        watcher._probe = Mock(return_value=(True, "thread-1", "Chat A"))
+        watcher._stop = Mock()
+        watcher._stop.wait.side_effect = [False, True]
+
+        watcher._run()
+
+        callback.assert_called_once_with(True, "Chat A", "thread-1")
+        self.assertEqual(self.store.get_meta("active_codex_thread"), "thread-1")
+        self.assertEqual(watcher.current_thread, "thread-1")
+        self.assertEqual(watcher.current_title, "Chat A")
 
     def test_pair_then_switch_both_directions(self):
         armed = self.app.arm_link(self.context)

@@ -189,7 +189,8 @@ class CodexA11yWatch:
             self.current_thread = state[1] if state[0] else None
             self.current_title = state[2] if state[0] else None
             try:
-                self._callback(*state)
+                # The probe returns identity before title; the app accepts title first.
+                self._callback(state[0], state[2], state[1])
             except Exception:
                 # Never let an overlay/update failure kill the watcher.
                 pass
