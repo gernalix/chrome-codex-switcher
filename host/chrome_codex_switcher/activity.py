@@ -6,6 +6,7 @@ a task registry or an inference of success/failure from a final assistant text.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 from contextlib import closing
@@ -117,25 +118,35 @@ def _display_title(title: object, fallback: str) -> str:
     return cleaned[:140] or fallback
 
 
-def telegram_send(item: dict) -> dict:
-    """Use the existing user's Telegram credential only through systemd LoadCredential."""
-    directory = os.environ.get("CREDENTIALS_DIRECTORY")
-    if not directory:
-        return {"status": "unavailable", "reason": "credentials_unavailable"}
-    path = Path(directory) / "telegram.env"
+def _telegram_credentials() -> tuple[str, str]:
+    """Fresh selected vault fields for each send; no native-file fallback."""
     try:
-        settings = {}
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if "=" in line and not line.lstrip().startswith("#"):
-                key, value = line.split("=", 1)
-                settings[key.strip()] = value.strip().strip("'\"")
-        prefix = "TELEGRAM_INSERT_BOT_NOISY"
-        token, chat_id = settings[prefix + "_BOT_TOKEN"], settings[prefix + "_CHAT_ID"]
+        runtime_path = Path.home() / ".local/lib/bitwarden/credential_runtime.py"
+        spec = importlib.util.spec_from_file_location("ccs_bws_runtime", runtime_path)
+        if spec is None or spec.loader is None:
+            raise ValueError("runtime_unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        config = json.loads((Path.home() / ".config/bws/references.json").read_text())
+        values = module.load_reference(config, "FEDORA_TELEGRAM_ENV", {
+            "TELEGRAM_INSERT_BOT_NOISY_BOT_TOKEN", "TELEGRAM_INSERT_BOT_NOISY_CHAT_ID"})
+        token = values["TELEGRAM_INSERT_BOT_NOISY_BOT_TOKEN"]
+        chat_id = values["TELEGRAM_INSERT_BOT_NOISY_CHAT_ID"]
         if not token or not chat_id:
             raise ValueError("missing_credentials")
+        return token, chat_id
+    except Exception:
+        # Import, transport and auth diagnostics must never expose values.
+        raise ValueError("vault_credentials_unavailable") from None
+
+
+def telegram_send(item: dict) -> dict:
+    """Use the canonical noisy bot through the existing Fedora vault runtime."""
+    try:
         label = "Web" if item["source"] == "web" else "Desktop"
         state = "terminata" if item["status"] == "finished" else "interrotta"
         message = f"ChatGPT {label}: {item['title']} — {state}\n{item['url']}"
+        token, chat_id = _telegram_credentials()
         body = json.dumps({"chat_id": chat_id, "text": message, "disable_web_page_preview": True}).encode()
         url = f"https://api.telegram.org/bot{token}/sendMessage"
     except (OSError, ValueError, KeyError, TypeError):

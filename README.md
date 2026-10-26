@@ -283,7 +283,14 @@ Aggiornamento ogni 4 secondi; dati e stati non vengono copiati in MegaVault.
   diverso consentono una nuova notifica. Nessuna notifica per ripristino storico,
   pagina inizialmente inattiva, chiusura scheda o disconnessione.
   Il servizio user systemd usa
-  `LoadCredential=telegram.env` tramite la credenziale utente già esistente.
+  Bitwarden Secrets Manager tramite il runtime Fedora già configurato
+  (`~/.local/lib/bitwarden/credential_runtime.py` e
+  `~/.config/bws/references.json`). Ogni invio legge soltanto token noisy e
+  destinatario da `FEDORA_TELEGRAM_ENV`, inclusi i riferimenti canonici
+  condivisi. Nessun fallback al vecchio file locale o a variabili ereditate.
+  Il bridge continua a funzionare se il vault non è disponibile; soltanto
+  la notifica risulta non disponibile. I valori aggiornati vengono letti
+  dall’invio successivo, senza riavviare browser o bridge.
   In sua assenza la dashboard continua a funzionare, ma la notifica non parte.
 
 Non è possibile conoscere in modo affidabile lo stato delle chat **Web**
