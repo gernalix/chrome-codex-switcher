@@ -9,7 +9,6 @@ PartOf=graphical-session.target
 Type=simple
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=%h/.local/share/chrome-codex-switcher/host
-LoadCredential=telegram.env:%h/.config/codex/secrets/telegram.env
 ExecStart=/usr/bin/python3 -m chrome_codex_switcher.daemon
 Restart=always
 RestartSec=1

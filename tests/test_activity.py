@@ -59,21 +59,46 @@ class ActivityTests(unittest.TestCase):
             )
 
     def test_telegram_uses_existing_personal_notification_transport(self):
-        settings = ("TELEGRAM_BOT_TOKEN=unrelated\nTELEGRAM_CHAT_ID=old\n"
-                    "TELEGRAM_INSERT_BOT_NOISY_BOT_TOKEN=notification-token\n"
-                    "TELEGRAM_INSERT_BOT_NOISY_CHAT_ID=123\n")
         response = Mock()
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
         response.read.return_value = b'{"ok":true,"result":{"message_id":123}}'
-        with patch.dict('os.environ', {'CREDENTIALS_DIRECTORY': '/credentials'}), \
-             patch('pathlib.Path.read_text', return_value=settings), \
+        with patch('chrome_codex_switcher.activity._telegram_credentials', return_value=('notification-token','123')), \
              patch('chrome_codex_switcher.activity.urlopen', return_value=response) as send:
             telegram_send({'source':'web', 'status':'finished', 'title':'Test',
                            'url':'https://chatgpt.com/c/test'})
         request = send.call_args.args[0]
         self.assertIn('notification-token', request.full_url)
         self.assertEqual('123', json.loads(request.data)['chat_id'])
+
+    def test_vault_failure_never_falls_back_to_inherited_credentials(self):
+        item = {'source':'web','status':'finished','title':'Test','url':'https://chatgpt.com/c/test'}
+        with patch.dict('os.environ', {'TELEGRAM_INSERT_BOT_NOISY_BOT_TOKEN':'legacy',
+                                      'TELEGRAM_INSERT_BOT_NOISY_CHAT_ID':'legacy'}), \
+             patch('chrome_codex_switcher.activity.importlib.util.spec_from_file_location',
+                   side_effect=RuntimeError('private transport diagnostic')), \
+             patch('chrome_codex_switcher.activity.urlopen') as send:
+            receipt = telegram_send(item)
+        self.assertEqual(receipt['status'],'unavailable')
+        self.assertNotIn('private',json.dumps(receipt))
+        send.assert_not_called()
+
+    def test_vault_reader_reloads_selected_fields_for_each_send(self):
+        from chrome_codex_switcher.activity import _telegram_credentials
+        module = Mock()
+        module.load_reference.side_effect = [
+            {'TELEGRAM_INSERT_BOT_NOISY_BOT_TOKEN':'first','TELEGRAM_INSERT_BOT_NOISY_CHAT_ID':'123'},
+            {'TELEGRAM_INSERT_BOT_NOISY_BOT_TOKEN':'second','TELEGRAM_INSERT_BOT_NOISY_CHAT_ID':'123'}]
+        config = {'projectId':'fixture','references':{}}
+        with patch('chrome_codex_switcher.activity.importlib.util.spec_from_file_location',return_value=Mock()), \
+             patch('chrome_codex_switcher.activity.importlib.util.module_from_spec',return_value=module), \
+             patch('pathlib.Path.read_text',return_value=json.dumps(config)):
+            self.assertEqual(_telegram_credentials(),('first','123'))
+            self.assertEqual(_telegram_credentials(),('second','123'))
+        self.assertEqual(module.load_reference.call_count,2)
+        for call in module.load_reference.call_args_list:
+            self.assertEqual(call.args,(config,'FEDORA_TELEGRAM_ENV',{
+                'TELEGRAM_INSERT_BOT_NOISY_BOT_TOKEN','TELEGRAM_INSERT_BOT_NOISY_CHAT_ID'}))
 
     def test_delivery_receipt_survives_monitor_restart_without_message_text(self):
         delivery_store = Store(self.root / "notification-receipts.sqlite")
@@ -96,10 +121,7 @@ class ActivityTests(unittest.TestCase):
         from urllib.error import URLError
         with patch.dict('os.environ', {}, clear=True):
             self.assertEqual(telegram_send({})['status'],'unavailable')
-        settings = ('TELEGRAM_INSERT_BOT_NOISY_BOT_TOKEN=test\n'
-                    'TELEGRAM_INSERT_BOT_NOISY_CHAT_ID=123\n')
-        with patch.dict('os.environ', {'CREDENTIALS_DIRECTORY':'/credentials'}), \
-             patch('pathlib.Path.read_text', return_value=settings), \
+        with patch('chrome_codex_switcher.activity._telegram_credentials', return_value=('test','123')), \
              patch('chrome_codex_switcher.activity.urlopen', side_effect=URLError('timeout')) as send:
             receipt=telegram_send({'source':'web','status':'finished','title':'Test',
                                    'url':'https://chatgpt.com/c/test'})
