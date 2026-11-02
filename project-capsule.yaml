@@ -1,0 +1,310 @@
+schema_version: c2.project-capsule.v1
+identity:
+  project_id: 99
+  slug: chrome-codex-switcher
+  repository_id: R0100
+scope:
+  purpose: Pair explicit Chrome tab contexts with native Codex thread deep links while
+    preserving scoped notes and identity bindings.
+  boundaries:
+  - Never focus real windows, synthesize keystrokes or read the live clipboard for
+    source verification.
+  - Historical prompt cards do not authorize restarting retired C2/C3 control planes.
+  - Browser-extension persistence E2E in CI is distinct from live GNOME/Wayland acceptance.
+repository:
+  canonical_workdir: /home/daniele/projects/chrome-codex-switcher
+  branch_policy: Use isolated task worktrees and the installed single writer; protect
+    the current primary branch and preserve all valid work.
+architecture:
+  summary: store.py owns SQLite note/context persistence; context_bindings.py and
+    clipboard_binding.py isolate binding policies. broker.py and daemon.py route bounded
+    local events; extension/ owns Chrome surfaces, while the GNOME companion owns
+    compositor clipboard/focus events without desktop overlays. verifier and identity
+    watchers fail closed on ambiguous active threads.
+  entrypoints:
+  - host/chrome_codex_switcher/cli.py
+  - host/chrome_codex_switcher/daemon.py
+  important_paths:
+  - host/chrome_codex_switcher
+  - extension
+  - contrib
+  - systemd
+  - tests
+  - README.md
+dependencies:
+- name: Python standard library and system SQLite
+  purpose: Offline policy, data and fixture verification.
+- name: Bubblewrap
+  purpose: Read-only source with private temporary home/runtime/data, isolated processes
+    and network.
+- name: Node and GNOME/Chrome integration
+  purpose: Actor-free JavaScript fixture verification locally; real desktop integration
+    is separately accepted.
+data:
+  schema: Private state.sqlite3 retains contexts, note/layout state, pairings and
+    indexed metadata; overlay.json is derived cache. Native Codex threads and browser
+    sessions are not duplicated authorities. Explicit historical prompt bindings are
+    metadata, not inferred lifecycle identities.
+  migrations: Use the owning Store schema/migrations with consistent backup; preserve
+    notes, pairings, separate Chrome/Codex note values and established IDs. Source
+    validation does not migrate the live desktop store.
+runtime:
+  services:
+  - chrome-codex-switcher.service
+  timers: []
+  containers: []
+devices: []
+commands:
+  setup:
+    not_applicable: Use existing global runtime/test dependencies; no venv, live data
+      ingestion or host provisioning is part of verification.
+  build:
+    not_applicable: Python source has no required compiled build.
+  test_targeted:
+    argv:
+    - bwrap
+    - --die-with-parent
+    - --unshare-net
+    - --unshare-pid
+    - --ro-bind
+    - /
+    - /
+    - --tmpfs
+    - /home
+    - --tmpfs
+    - /run
+    - --tmpfs
+    - /tmp
+    - --tmpfs
+    - /mnt
+    - --tmpfs
+    - /media
+    - --tmpfs
+    - /var/lib
+    - --proc
+    - /proc
+    - --dev
+    - /dev
+    - --ro-bind
+    - .
+    - /tmp/work
+    - --chdir
+    - /tmp/work
+    - --clearenv
+    - --setenv
+    - PATH
+    - /usr/bin:/bin
+    - --setenv
+    - HOME
+    - /tmp
+    - --setenv
+    - PYTHONPATH
+    - /tmp/work:/tmp/work/host:/tmp/work/src
+    - --setenv
+    - PYTHONDONTWRITEBYTECODE
+    - '1'
+    - /usr/bin/python3
+    - -B
+    - -m
+    - unittest
+    - discover
+    - -s
+    - tests
+    - -p
+    - test_context_bindings_capsule.py
+    - -v
+    cwd: .
+  test_full:
+    argv: &id001
+    - bwrap
+    - --die-with-parent
+    - --unshare-net
+    - --unshare-pid
+    - --ro-bind
+    - /
+    - /
+    - --tmpfs
+    - /home
+    - --tmpfs
+    - /run
+    - --tmpfs
+    - /tmp
+    - --tmpfs
+    - /mnt
+    - --tmpfs
+    - /media
+    - --tmpfs
+    - /var/lib
+    - --proc
+    - /proc
+    - --dev
+    - /dev
+    - --ro-bind
+    - .
+    - /tmp/work
+    - --chdir
+    - /tmp/work
+    - --clearenv
+    - --setenv
+    - PATH
+    - /usr/bin:/bin
+    - --setenv
+    - HOME
+    - /tmp
+    - --setenv
+    - PYTHONPATH
+    - /tmp/work:/tmp/work/host:/tmp/work/src
+    - --setenv
+    - PYTHONDONTWRITEBYTECODE
+    - '1'
+    - /usr/bin/python3
+    - -B
+    - -m
+    - unittest
+    - discover
+    - -s
+    - tests
+    - -v
+    cwd: .
+  lint:
+    argv:
+    - git
+    - diff
+    - --check
+    cwd: .
+  deploy_install:
+    not_applicable: Use the existing project installer and specialist operations only
+      within a separately requested deployment scope.
+  smoke:
+    not_applicable: Live sources, browser/compositor sessions and private data operations
+      are not capsule hooks.
+  verify:
+    fast:
+      argv:
+      - python3
+      - /home/daniele/projects/codex-roadmap/tools/project_capsule.py
+      - --repo
+      - .
+      - --mode
+      - FAST
+      cwd: .
+    full:
+      argv:
+      - python3
+      - /home/daniele/projects/codex-roadmap/tools/project_capsule.py
+      - --repo
+      - .
+      - --mode
+      - FULL
+      cwd: .
+safety:
+  invariants:
+  - Never infer the canonical prompt binding from URLs/titles/deep links or show a
+    stale note on another thread.
+  - Preserve existing note state and exact pairings; ambiguous identity fails closed.
+  - Keep the local HTTP boundary loopback-only and scoped; no private note or conversation
+    bodies in Git/output.
+  risky_operations:
+  - Installation, real capture/ingestion, source recovery and live desktop/browser
+    operations require their own requested scope.
+  recovery:
+  - Preserve original data and prior good states. Use owning semantic writers and
+    consistent SQLite backups for applicable stores.
+acceptance:
+- FAST validates identity, source paths, executable commands and reviewed-source freshness.
+- FULL runs the declared isolated fixture suite; original data, credentials and desktop/browser
+  sessions remain inaccessible.
+- Live archive completeness, compositor behavior, browser-extension E2E and installed
+  runtime are separate checks, not inferred from a capsule PASS.
+references:
+  megavault: /home/daniele/MegaVault/megavault.sqlite
+  c2: Historical-only /home/daniele/projects/codex-roadmap/roadmap.sqlite; no lifecycle
+    writes or dispatcher use.
+freshness:
+  reviewed_commit: f635ff1ef75927b63f867606c842cc02bdfdf1bc
+  watch_paths:
+  - host
+  - extension
+  - contrib
+  - systemd
+  - tests
+  - install.sh
+  - uninstall.sh
+  - pyproject.toml
+  - NV.txt
+artifacts:
+  agents: AGENTS.md
+  architecture: README.md
+  operations: README.md
+  data_model: host/chrome_codex_switcher/store.py
+validation_hooks:
+- id: isolated-offline-suite
+  argv: *id001
+  cwd: .
+  safe: true
+- id: actor-free-gnome-runtime
+  argv:
+  - bwrap
+  - --die-with-parent
+  - --unshare-net
+  - --unshare-pid
+  - --ro-bind
+  - /
+  - /
+  - --tmpfs
+  - /home
+  - --tmpfs
+  - /run
+  - --tmpfs
+  - /tmp
+  - --tmpfs
+  - /mnt
+  - --tmpfs
+  - /media
+  - --tmpfs
+  - /var/lib
+  - --proc
+  - /proc
+  - --dev
+  - /dev
+  - --ro-bind
+  - .
+  - /tmp/work
+  - --chdir
+  - /tmp/work
+  - --clearenv
+  - --setenv
+  - PATH
+  - /usr/bin:/bin
+  - --setenv
+  - HOME
+  - /tmp
+  - --setenv
+  - PYTHONPATH
+  - /tmp/work:/tmp/work/host:/tmp/work/src
+  - --setenv
+  - PYTHONDONTWRITEBYTECODE
+  - '1'
+  - /usr/bin/node
+  - tests/e2e/test_gnome_bridge_runtime.cjs
+  cwd: .
+  safe: true
+change_verification:
+- paths:
+  - project-capsule.yaml
+  - AGENTS.md
+  - '*.md'
+  commands:
+  - lint
+- paths:
+  - '*.py'
+  - prompt_history/*
+  - host/*
+  - extension/*
+  - schema/*
+  - tests/*
+  - tools/*
+  - systemd/*
+  - contrib/*
+  commands:
+  - test_full
