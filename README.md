@@ -10,8 +10,8 @@ Fedora/Wayland workflow helper for pairing a specific Chrome tab with a specific
 - Chrome → Codex: one extension shortcut opens the exact paired Codex thread with `gio open`.
 - Codex → Chrome: press Codex Desktop's **Copy chat deep link** shortcut; on GNOME Wayland the GNOME companion observes the clipboard change inside the compositor and forwards the `codex://threads/...` value to the daemon, which focuses the exact paired Chrome tab.
 - Persists the full floating-note state in SQLite: text, position, size, collapsed/hidden state, and pairings. Canonical page URL is used as a fallback, so refreshing or reopening the same Chrome page restores the existing note and layout instead of creating an empty/default one.
-- Shows the note over the active Codex conversation and hides it whenever the active thread cannot be resolved safely, so a stale note is never shown over a different chat.
-- Lets the note be edited from either Chrome or Codex. By default both surfaces share one note; enable **Separate Chrome/Codex notes** to keep two independent values for the same pair.
+- Shows the floating note only in Chrome. Desktop chat overlays are removed; exact thread identity still gates pairing and context actions.
+- Lets the note be edited in Chrome and preserves existing shared or independent Chrome/Codex note values in SQLite. Retained desktop-note data does not imply a rendered Codex overlay.
 - Restores/focuses the right Chrome tab even with many windows/tabs; if the paired tab is closed, it reopens its URL.
 - Provides a searchable Chrome side panel for all contexts; **Alt+Shift+S** opens it with the search field focused. It searches canonical and page-detected `PROMPT_ID` values, Chrome titles, Codex chat titles, and note text. Indexed IDs can also be added or removed manually per context.
 - Ships a GNOME Shell companion for the native Wayland clipboard and Chrome focus bridge. Desktop chat overlays are removed.
@@ -164,7 +164,11 @@ context-twin verify-workflowy 947306
 context-twin self-test
 ```
 
-`verify-prompt` is the programmatic control plane for Codex/automation. The
+### Historical PROMPT_ID diagnostics
+
+The following explicit PROMPT_ID verifier descriptions are retained for compatibility and historical evidence. They are not a prerequisite for native Codex chats or Capsule checks. No desktop note overlay is installed; an old gate requiring that removed surface cannot establish current runtime acceptance.
+
+`verify-prompt` is the historical programmatic control plane for those bindings. The
 read-only form validates the explicit PROMPT_ID binding, real Chrome tab/content
 script and the context/thread twin. `--full` also opens/focuses the bound Codex
 thread, waits for the GNOME companion heartbeat, exercises shared-note
