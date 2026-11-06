@@ -128,6 +128,19 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(receipt['status'],'uncertain')
         self.assertEqual(send.call_count,1)
 
+    def test_telegram_disabled_but_web_activity_stays_visible(self):
+        monitor = ActivityMonitor(
+            session_db=self.db, sessions_root=self.sessions,
+            clock=lambda: self.clock_value,
+        )
+        payload = {"tab_id": 7, "url": "https://chatgpt.com/c/abc", "title": "Test"}
+        with patch.dict("os.environ", {"CCS_TELEGRAM_NOTIFICATIONS": "0"}), \
+             patch("chrome_codex_switcher.activity.threading.Thread") as thread:
+            monitor.observe_web({**payload, "status": "running"})
+            monitor.observe_web({**payload, "status": "idle"})
+            thread.assert_not_called()
+        self.assertEqual(1, monitor.snapshot()["recent"])
+
     def test_web_activity_and_single_completion_notification(self):
         url = "https://chatgpt.com/c/abc?a=2#private"
         base = {"url": url, "title": "Chat test", "tab_id": 22}

@@ -206,6 +206,8 @@ class ActivityMonitor:
         self._worker: threading.Thread | None = None
 
     def _send_async(self, item: dict) -> None:
+        if os.environ.get("CCS_TELEGRAM_NOTIFICATIONS", "1").strip().lower() in {"0", "false", "off", "no"}:
+            return
         threading.Thread(target=self._deliver, args=(item,), daemon=True,
                          name="ccs-telegram").start()
 

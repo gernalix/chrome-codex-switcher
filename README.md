@@ -296,6 +296,9 @@ Aggiornamento ogni 4 secondi; dati e stati non vengono copiati in MegaVault.
   la notifica risulta non disponibile. I valori aggiornati vengono letti
   dall’invio successivo, senza riavviare browser o bridge.
   In sua assenza la dashboard continua a funzionare, ma la notifica non parte.
+  Con `CCS_TELEGRAM_NOTIFICATIONS=0` nell'ambiente del servizio, CCS
+  non invia notifiche Telegram per i turni ChatGPT Web o Desktop; la
+  rilevazione delle chat e la dashboard restano attive.
 
 Non è possibile conoscere in modo affidabile lo stato delle chat **Web**
 chiuse/non montate usando la sola estensione, né garantire che lo stesso schema
