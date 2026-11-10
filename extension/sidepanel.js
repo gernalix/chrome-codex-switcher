@@ -4,6 +4,44 @@ let contexts = [];
 let visibleRows = [];
 let selectedIndex = 0;
 const send = message => new Promise(resolve => chrome.runtime.sendMessage(message, resolve));
+const pairing = document.createElement("section");
+pairing.hidden = true;
+document.querySelector("header").append(pairing);
+let pairingId = null;
+
+async function loadPairing() {
+  const result = await send({type: "side:clipboard-proposal"});
+  const proposal = result?.proposal;
+  if (!proposal) {
+    pairingId = null;
+    pairing.hidden = true;
+    pairing.replaceChildren();
+    return;
+  }
+  if (pairingId === proposal.id) return;
+  pairingId = proposal.id;
+  pairing.replaceChildren();
+  pairing.hidden = false;
+  const target = document.createElement("p");
+  target.textContent = [
+    proposal.action === "pair" ? "Conferma associazione" : "Conferma apertura",
+    proposal.prompt_id ? "Prompt " + proposal.prompt_id : "",
+    proposal.title || "",
+    proposal.url || "",
+    "Thread Codex " + proposal.thread
+  ].filter(Boolean).join(" · ");
+  const button = document.createElement("button");
+  button.textContent = "Conferma questa coppia";
+  button.addEventListener("click", async event => {
+    if (!event.isTrusted) return;
+    button.disabled = true;
+    const confirmation = await send({type: "side:clipboard-confirm", proposalId: proposal.id});
+    if (!confirmation?.ok) window.alert("Conferma fallita. Ricontrolla la coppia e riprova.");
+    await loadPairing();
+    await load(true);
+  });
+  pairing.append(target, button);
+}
 
 const controls = PnCardsUI.toolbar(document.querySelector("header"), () => {selectedIndex = 0; render();});
 
@@ -209,6 +247,7 @@ function render() {
 }
 
 async function load(force = false) {
+  await loadPairing();
   const result = await send({type: "side:list"});
   contexts = result?.contexts || [];
   if (force || (!list.querySelector("details[open]") && !list.contains(document.activeElement))) render();

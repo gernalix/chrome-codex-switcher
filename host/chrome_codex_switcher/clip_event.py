@@ -16,7 +16,7 @@ def main() -> int:
         f"http://127.0.0.1:{port}/api/clipboard",
         data=body,
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "X-CCS-Request": "1"},
     )
     try:
         with urlopen(request, timeout=2) as response:

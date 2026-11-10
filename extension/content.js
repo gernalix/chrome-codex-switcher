@@ -6,7 +6,7 @@
   const host = document.createElement("div");
   host.id = "chrome-codex-switcher-host";
   host.style.cssText = "all:initial;position:fixed;z-index:2147483647;left:calc(100vw - 350px);top:84px;width:320px;height:200px;";
-  const shadow = host.attachShadow({mode: "open"});
+  const shadow = host.attachShadow({mode: "closed"});
   document.documentElement.appendChild(host);
 
   shadow.innerHTML = `
@@ -26,7 +26,7 @@
         <button class="btn unlink" hidden title="Scollega Codex conservando le note" aria-label="Scollega Codex conservando le note">🗑</button>
         <button class="btn close" title="Nascondi nota" aria-label="Nascondi nota">❌</button>
       </div>
-      <div class="body"><textarea class="note" aria-label="Nota Chrome"></textarea></div>
+      <div class="body"><button type="button" class="note" disabled>Apri nota privata</button></div>
       <div class="flash" role="status" aria-live="polite"></div>
     </div>`;
 
@@ -34,7 +34,6 @@
   const note = shadow.querySelector(".note");
   const flashEl = shadow.querySelector(".flash");
   let context = null;
-  let noteTimer = null;
   let uiTimer = null;
   let pendingUi = {};
   let pendingGeometry = null;
@@ -67,7 +66,6 @@
   function destroyStaleOverlay(reloadPage = false) {
     extensionContextAlive = false;
     window.removeEventListener("keydown", automationOverlayShortcut, true);
-    clearTimeout(noteTimer);
     clearTimeout(uiTimer);
     clearTimeout(refreshRetryTimer);
     clearTimeout(promptIdFlushTimer);
@@ -374,6 +372,7 @@
     if (pendingContextId === next.id) next = {...next, geometry: pendingGeometry, ...pendingUi};
     const contextChanged = promptScanContextId !== next.id;
     context = next;
+    note.disabled = false;
     if (contextChanged) {
       promptScanContextId = next.id;
       promptIdsSeen.clear();
@@ -381,13 +380,11 @@
       clearTimeout(promptIdFlushTimer);
       if (promptIdObserver) queueMicrotask(scanFullPageForPromptIds);
     }
-    if (contextChanged || shadow.activeElement !== note) note.value = next.note || "";
     const linked = !!next.twin?.codex_thread;
     shadow.querySelector(".link").hidden = linked;
     shadow.querySelector(".switch").hidden = !linked;
     shadow.querySelector(".unlink").hidden = !linked;
     // Old collapsed preferences remain stored, but no longer hide the editor.
-    host.dataset.contextId = next.id;
     host.dataset.overlayUi = "minimal-v1";
     host.style.display = next.hidden ? "none" : "block";
     const g = next.geometry || {};
@@ -438,31 +435,17 @@
     return false;
   }
 
-  note.addEventListener("input", () => {
-    if (!context) return;
-    clearTimeout(noteTimer);
-    const contextId = context.id;
-    const value = note.value;
-    noteTimer = setTimeout(() => send({
-      type: "context:note",
-      contextId,
-      note: value,
-      surface: "chrome"
-    }), 220);
+  note.addEventListener("click", async event => {
+    if (!event.isTrusted || !context) return;
+    const result = await send({type: "context:open-note", contextId: context.id});
+    if (!result?.ok) flash("Impossibile aprire la nota: " + (result?.error || "daemon unavailable"), 3500);
   });
 
   shadow.querySelector(".unlink").addEventListener("click", async event => {
-    if (!context?.twin) return;
+    if (!event.isTrusted || !context?.twin) return;
     const contextId = context.id;
     const button = event.currentTarget;
     button.disabled = true;
-    clearTimeout(noteTimer);
-    const saved = await send({type: "context:note", contextId, note: note.value, surface: "chrome"});
-    if (!saved?.ok) {
-      button.disabled = false;
-      flash("Nota non salvata: " + (saved?.error || "daemon unavailable"));
-      return;
-    }
     const result = await send({type: "side:unlink", contextId});
     if (result?.ok) {
       // Read the same context, even if the active page changed during the request.
@@ -478,17 +461,20 @@
     button.disabled = false;
   });
 
-  shadow.querySelector(".link").addEventListener("click", async () => {
+  shadow.querySelector(".link").addEventListener("click", async event => {
+    if (!event.isTrusted) return;
     const result = await send({type: "context:arm"});
-    flash(result?.ok ? "Now open the target Codex chat and press Copy chat deep link" : `Link failed: ${result?.error || "daemon unavailable"}`, 3500);
+    flash(result?.ok ? "Copia il link della chat Codex, poi conferma la coppia nel pannello laterale" : `Link failed: ${result?.error || "daemon unavailable"}`, 3500);
   });
 
-  shadow.querySelector(".switch").addEventListener("click", async () => {
+  shadow.querySelector(".switch").addEventListener("click", async event => {
+    if (!event.isTrusted) return;
     const result = await send({type: "context:switch"});
     if (!result?.ok) flash(result?.error === "not_linked" ? "This tab has no Codex twin yet" : `Switch failed: ${result?.error || "daemon unavailable"}`);
   });
 
-  shadow.querySelector(".close").addEventListener("click", () => {
+  shadow.querySelector(".close").addEventListener("click", event => {
+    if (!event.isTrusted) return;
     const savedGeometry = geometry();
     host.style.display = "none";
     saveUi({hidden: true}, savedGeometry);
@@ -496,18 +482,18 @@
 
   let drag = null;
   shadow.querySelector(".head").addEventListener("pointerdown", event => {
-    if (event.target.closest("button")) return;
+    if (!event.isTrusted || event.target.closest("button")) return;
     const rect = host.getBoundingClientRect();
     drag = {dx: event.clientX - rect.left, dy: event.clientY - rect.top};
     event.currentTarget.setPointerCapture(event.pointerId);
   });
   shadow.querySelector(".head").addEventListener("pointermove", event => {
-    if (!drag) return;
+    if (!event.isTrusted || !drag) return;
     host.style.left = `${Math.max(0, Math.min(innerWidth - 80, event.clientX - drag.dx))}px`;
     host.style.top = `${Math.max(0, Math.min(innerHeight - 40, event.clientY - drag.dy))}px`;
   });
   shadow.querySelector(".head").addEventListener("pointerup", event => {
-    if (!drag) return;
+    if (!event.isTrusted || !drag) return;
     drag = null;
     try { event.currentTarget.releasePointerCapture(event.pointerId); } catch {}
     fitContent();
@@ -537,7 +523,6 @@
         ok: true,
         context_id: context?.id || null,
         overlay_ui: host.dataset.overlayUi || null,
-        note: note.value,
         notes_independent: !!context?.notes_independent,
         visible: host.style.display !== "none" && !host.hasAttribute("data-automation-paused"),
         automation_paused: host.hasAttribute("data-automation-paused"),
@@ -576,6 +561,7 @@
   if (isWorkflowyPage) {
     installWorkflowyDashboardStyles();
     document.addEventListener("click", async event => {
+      if (!event.isTrusted) return;
       const anchor = event.target.closest?.("a");
       if (!anchor?.href) return;
       let url;
@@ -603,8 +589,10 @@
           if (result.stage === "complete") {
             const automatic = result.source === "native_session" ? " Codex rilevato automaticamente." : "";
             flash(`✅ Chrome e Codex collegati.${automatic}`, 6500);
+          } else if (result.stage === "confirmation") {
+            flash("Verifica il thread proposto e conferma nel pannello laterale.", 9000);
           } else if (result.stage === "codex") {
-            flash("🧠 Apri la chat Codex corretta e premi Ctrl+Alt+L. È l'unica azione rimasta.", 9000);
+            flash("Apri la chat Codex corretta, copia il link con Ctrl+Alt+L e conferma nel pannello laterale.", 9000);
           } else if (result.stage === "chrome") {
             if (result.source === "native_session") {
               flash("🧠 Codex trovato automaticamente. Ora apri la tab ChatGPT corretta.", 8500);
@@ -651,7 +639,6 @@
     try { lifecyclePort?.disconnect(); } catch {}
     lifecyclePort = null;
     clearInterval(urlWatchTimer);
-    clearTimeout(noteTimer);
     clearTimeout(uiTimer);
     clearTimeout(refreshRetryTimer);
     clearTimeout(promptIdFlushTimer);

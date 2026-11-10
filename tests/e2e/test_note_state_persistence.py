@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from selenium import webdriver
-from selenium.common.exceptions import ElementClickInterceptedException
+from selenium.common.exceptions import ElementClickInterceptedException, NoSuchShadowRootException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
@@ -66,6 +66,7 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         cls._wait_daemon()
 
         options = Options()
+        options.add_experimental_option("enableExtensionTargets", True)
         if os.environ.get("CCS_E2E_HEADLESS") == "1":
             options.add_argument("--headless=new")
         chrome_binary = os.environ.get("CHROME_BINARY")
@@ -126,6 +127,9 @@ class NoteStatePersistenceE2E(unittest.TestCase):
             cls.daemon.wait(timeout=5)
         except subprocess.TimeoutExpired:
             cls.daemon.kill()
+            cls.daemon.wait()
+        if cls.daemon.stdout:
+            cls.daemon.stdout.close()
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -162,24 +166,61 @@ class NoteStatePersistenceE2E(unittest.TestCase):
     def _canonical_url(self, path: str) -> str:
         return f"http://127.0.0.1:{self.page_port}/{path}"
 
-    def _wait_extension(self, *, hydrated: bool = True) -> None:
-        self.wait.until(
-            lambda driver: driver.execute_script(
-                """
-                const host = document.querySelector("#chrome-codex-switcher-host");
-                const root = host?.shadowRoot;
-                return !!root?.querySelector(".note") && (!arguments[0] || !!host.dataset.contextId);
-                """, hydrated
-            )
+    def _overlay_element(self, selector: str):
+        host = self.driver.find_element("id", "chrome-codex-switcher-host")
+        return host.shadow_root.find_element("css selector", selector)
+
+    def _overlay_script(self, script: str, *args):
+        # WebDriver can inspect closed roots without changing the page or extension.
+        return self.driver.execute_script(
+            f"const overlay = arguments[{len(args)}].getRootNode();\n" + script,
+            *args, self._overlay_element(".note"),
         )
 
-    def _post(self, path: str, payload: dict) -> dict:
-        request = Request(
-            f"http://127.0.0.1:{DAEMON_PORT}{path}",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
+    def _open_note(self):
+        original = self.driver.current_window_handle
+        handles = set(self.driver.window_handles)
+        self.wait.until(lambda _: self._overlay_element(".note").is_enabled())
+        ActionChains(self.driver).click(self._overlay_element(".note")).perform()
+        def opened(driver):
+            message = self._overlay_element(".flash").get_attribute("textContent")
+            self.assertFalse(message.startswith("Impossibile aprire"), message)
+            return next(iter(set(driver.window_handles) - handles), None)
+
+        editor = self.wait.until(opened)
+        self.driver.switch_to.window(editor)
+        self.assertTrue(self.driver.current_url.startswith("chrome-extension://"))
+        note = self.wait.until(lambda driver: driver.find_element("id", "note"))
+        self.wait.until(lambda _: note.is_enabled())
+        return original, note
+
+    def _set_note(self, text: str) -> None:
+        original, note = self._open_note()
+        note.clear()
+        note.send_keys(text)
+        self.driver.find_element("css selector", "form button").click()
+        self.wait.until(lambda driver: driver.find_element("css selector", "[role=status]").text == "Salvata")
+        self.driver.close()
+        self.driver.switch_to.window(original)
+
+    def _wait_extension(self, *, hydrated: bool = True) -> None:
+        WebDriverWait(self.driver, 15, ignored_exceptions=(NoSuchShadowRootException,)).until(
+            lambda _: self._overlay_element(".note")
         )
+        self.assertIsNone(self.driver.execute_script(
+            'return document.getElementById("chrome-codex-switcher-host").shadowRoot'
+        ))
+        if hydrated:
+            self.wait.until(lambda _: self._overlay_element(".note").is_enabled())
+            self._context_for_url(self.driver.current_url.split("#", 1)[0])
+
+    def _api(self, path: str, payload: dict | None = None) -> dict:
+        headers = {"X-CCS-Request": "1"}
+        data = None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+            data = json.dumps(payload).encode("utf-8")
+        request = Request(f"http://127.0.0.1:{DAEMON_PORT}{path}", data=data, headers=headers)
         with urlopen(request, timeout=4) as response:
             return json.load(response)
 
@@ -200,14 +241,12 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self.fail(f"context not created for {canonical_url}: {last!r}")
 
     def _snapshot(self) -> dict:
-        return self.driver.execute_script(
+        return self._overlay_script(
             """
-            const host = document.querySelector("#chrome-codex-switcher-host");
-            const root = host.shadowRoot;
+            const host = overlay.host;
+            const root = overlay;
             const box = root.querySelector(".box");
-            const note = root.querySelector(".note");
             return {
-              note: note.value,
               x: parseInt(host.style.left, 10),
               y: parseInt(host.style.top, 10),
               width: parseInt(host.style.width, 10),
@@ -228,42 +267,22 @@ class NoteStatePersistenceE2E(unittest.TestCase):
             "collapsed": False,
             "hidden": True,
         }
-        self.driver.execute_script(
+        self._set_note(note_text)
+        self._overlay_script(
             """
-            const host = document.querySelector("#chrome-codex-switcher-host");
-            const root = host.shadowRoot;
-            const note = root.querySelector(".note");
-            note.focus();
-            note.value = arguments[0];
-            note.dispatchEvent(new Event("input", {bubbles: true}));
-            host.style.left = arguments[1] + "px";
-            host.style.top = arguments[2] + "px";
-            host.style.width = arguments[3] + "px";
-            host.style.height = arguments[4] + "px";
+            const host = overlay.host;
+            const box = overlay.querySelector(".box");
+            host.style.left = arguments[0] + "px";
+            host.style.top = arguments[1] + "px";
+            // The browser's resize control changes the box. Observe the same
+            // element and wait for its persisted geometry before hiding it.
+            box.style.width = arguments[2] + "px";
+            box.style.height = arguments[3] + "px";
             """,
-            expected["note"],
-            expected["x"],
-            expected["y"],
-            expected["width"],
-            expected["height"],
+            expected["x"], expected["y"], expected["width"], expected["height"],
         )
-        # Wait for the real debounced note write before moving focus to the UI controls.
-        deadline = time.time() + 8
-        while time.time() < deadline:
-            with sqlite3.connect(self.db_path) as db:
-                row = db.execute(
-                    "SELECT note FROM contexts WHERE url=? ORDER BY updated_at DESC LIMIT 1",
-                    (self.current_canonical_url,),
-                ).fetchone()
-            if row and row[0] == note_text:
-                break
-            time.sleep(0.1)
-        else:
-            self.fail(f"note debounce did not persist {note_text!r}: {row!r}")
-        # The ResizeObserver persists geometry through the normal content-script path.
-        self.driver.execute_script(
-            'document.querySelector("#chrome-codex-switcher-host").shadowRoot.querySelector(".close").click()'
-        )
+        self._wait_db_state({**expected, "hidden": False})
+        self._overlay_element(".close").click()
         self._wait_db_state(expected)
         return expected
 
@@ -308,7 +327,7 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         actual = None
         deadline = time.time() + 8
         while time.time() < deadline:
-            actual = self._snapshot()
+            actual = {**self._snapshot(), "note": self._context_for_url(self.current_canonical_url)["note"]}
             if actual == expected:
                 return
             time.sleep(0.1)
@@ -384,7 +403,7 @@ class NoteStatePersistenceE2E(unittest.TestCase):
                 const hosts = document.querySelectorAll('#chrome-codex-switcher-host');
                 return hosts.length === 1
                   && hosts[0].dataset.instance !== arguments[0]
-                  && !!hosts[0].shadowRoot?.querySelector('.note');
+                  && hosts[0].isConnected;
                 """,
                 old_marker,
             ))
@@ -395,17 +414,16 @@ class NoteStatePersistenceE2E(unittest.TestCase):
                 return hosts.map(host => ({instance: host.dataset.instance || '', connected: host.isConnected}));
                 """
             )
-            with urlopen(f"http://127.0.0.1:{DAEMON_PORT}/api/health", timeout=4) as response:
-                health = json.load(response)
+            health = self._api("/api/health")
             print(
                 f"reload diagnostic page={page_state!r} health={health!r}",
                 file=sys.stderr,
             )
             raise
-        probe = self.driver.execute_script(
+        probe = self._overlay_script(
             """
             const hosts = document.querySelectorAll('#chrome-codex-switcher-host');
-            return {count: hosts.length, note: !!hosts[0]?.shadowRoot?.querySelector('.note')};
+            return {count: hosts.length, note: !!overlay.querySelector('.note')};
             """
         )
         self.assertEqual({"count": 1, "note": True}, probe)
@@ -416,16 +434,20 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self.driver.get(self._url(path, "seed"))
         self._wait_extension()
         context = self._context_for_url(canonical)
-        self._post("/api/note", {"context_id": context["id"], "note": "delayed startup note", "surface": "chrome"})
+        self._api("/api/note", {"context_id": context["id"], "note": "delayed startup note", "surface": "chrome"})
         self._stop_daemon()
 
         self.driver.refresh()
         self._wait_extension(hydrated=False)
-        self.assertEqual("", self._snapshot()["note"])
+        self.assertEqual("BUTTON", self._overlay_element(".note").tag_name.upper())
 
         type(self).daemon = type(self)._start_daemon()
         type(self)._wait_daemon()
-        WebDriverWait(self.driver, 15).until(lambda driver: self._snapshot()["note"] == "delayed startup note")
+        self.wait.until(lambda _: self._overlay_script("return !!overlay.host.dataset.overlayUi"))
+        original, note = self._open_note()
+        self.assertEqual("delayed startup note", note.get_attribute("value"))
+        self.driver.close()
+        self.driver.switch_to.window(original)
 
     def test_daemon_restart_reconnects_without_overwriting_focused_edit(self) -> None:
         path = "daemon-restart-case"
@@ -433,35 +455,20 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self.driver.get(self._url(path, "before-restart"))
         self._wait_extension()
         context = self._context_for_url(canonical)
-        self.driver.execute_script(
-            """
-            const note = document.querySelector('#chrome-codex-switcher-host').shadowRoot.querySelector('.note');
-            note.focus(); note.value = 'local focused edit';
-            """
-        )
+        original, note = self._open_note()
+        note.send_keys("local focused edit")
         self._stop_daemon()
         with sqlite3.connect(self.db_path) as db:
             db.execute("UPDATE contexts SET note=?, codex_note=? WHERE id=?", ("server after restart", "server after restart", context["id"]))
         type(self).daemon = type(self)._start_daemon()
         type(self)._wait_daemon()
 
-        deadline = time.time() + 15
-        while time.time() < deadline:
-            try:
-                with urlopen(f"http://127.0.0.1:{DAEMON_PORT}/api/health", timeout=1) as response:
-                    if response.status == 200:
-                        break
-            except Exception:
-                pass
-            time.sleep(0.1)
-        else:
-            self.fail("daemon did not recover after restart")
-        time.sleep(3)
-        focused = self.driver.execute_script(
-            "return document.querySelector('#chrome-codex-switcher-host').shadowRoot.activeElement?.className === 'note'"
-        )
-        self.assertTrue(focused, self.driver.execute_script("return {active:document.activeElement?.tagName, width:innerWidth,height:innerHeight, url:location.href}"))
-        self.assertEqual("local focused edit", self._snapshot()["note"])
+        self.assertEqual("local focused edit", note.get_attribute("value"))
+        self.driver.find_element("css selector", "form button").click()
+        self.wait.until(lambda driver: driver.find_element("css selector", "[role=status]").text == "Salvata")
+        self.assertEqual("local focused edit", self._context_for_url(canonical)["note"])
+        self.driver.close()
+        self.driver.switch_to.window(original)
 
     def test_split_merge_notes_uses_current_value_and_persists_both_surfaces(self) -> None:
         path = "note-mode-case"
@@ -471,18 +478,10 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self._wait_extension()
         context = self._context_for_url(canonical)
 
-        self.driver.execute_script(
-            """
-            const root = document.querySelector('#chrome-codex-switcher-host').shadowRoot;
-            const note = root.querySelector('.note');
-            note.focus();
-            note.value = 'current shared value';
-            note.dispatchEvent(new Event('input', {bubbles: true}));
-            """
-        )
+        self._set_note("current shared value")
         # Separate mode remains an API/side-panel setting; the overlay no longer
         # contains a checkbox that could merge notes accidentally.
-        self._post("/api/note-mode", {
+        self._api("/api/note-mode", {
             "context_id": context["id"], "independent": True,
             "source": "chrome", "note": "current shared value",
         })
@@ -499,15 +498,8 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         else:
             self.fail(f"split state did not converge: {row!r}")
 
-        self.driver.execute_script(
-            """
-            const note = document.querySelector('#chrome-codex-switcher-host').shadowRoot.querySelector('.note');
-            note.focus();
-            note.value = 'chrome independent';
-            note.dispatchEvent(new Event('input', {bubbles: true}));
-            """
-        )
-        self._post("/api/note", {
+        self._set_note("chrome independent")
+        self._api("/api/note", {
             "context_id": context["id"],
             "note": "codex independent",
             "surface": "codex",
@@ -520,7 +512,7 @@ class NoteStatePersistenceE2E(unittest.TestCase):
             ).fetchone()
         self.assertEqual(("chrome independent", "codex independent", 1), split)
 
-        merged = self._post("/api/note-mode", {
+        merged = self._api("/api/note-mode", {
             "context_id": context["id"],
             "independent": False,
             "source": "codex",
@@ -530,7 +522,7 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self.assertEqual("codex independent", merged["codex_note"])
         self.assertFalse(merged["notes_independent"])
 
-        repeated = self._post("/api/note-mode", {
+        repeated = self._api("/api/note-mode", {
             "context_id": context["id"],
             "independent": False,
             "source": "codex",
@@ -544,12 +536,11 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self.driver.execute_script("document.getElementById('chrome-codex-switcher-host').remove()")
         for name in ("tests/e2e/overlay_fixture.js", "extension/content.js"):
             self.driver.execute_script((ROOT / name).read_text())
-        root = "document.getElementById('chrome-codex-switcher-host').shadowRoot"
         def layout():
-            return self.driver.execute_script("""
-                const host=document.getElementById('chrome-codex-switcher-host'),r=host.shadowRoot;
+            return self._overlay_script("""
+                const host=overlay.host,r=overlay;
                 const h=r.querySelector('.head'),n=r.querySelector('.note');
-                const buttons=[...r.querySelectorAll('button')].filter(b=>!b.hidden);
+                const buttons=[...h.querySelectorAll('button')].filter(b=>!b.hidden);
                 return {controls:buttons.map(b=>b.textContent),
                   allInHeader:buttons.every(b=>b.parentElement===h),
                   accessible:buttons.every(b=>b.title&&b.getAttribute('aria-label')&&b.tabIndex===0&&b.offsetWidth>=28&&b.offsetHeight>=28),
@@ -557,11 +548,11 @@ class NoteStatePersistenceE2E(unittest.TestCase):
                   extraText:[...r.querySelector('.box').childNodes].filter(n=>n.nodeType===3).some(n=>n.textContent.trim()),
                   headerText:h.innerText.trim().replace(/\\s+/g,' '),
                   emptySpace:buttons[0].getBoundingClientRect().left-h.getBoundingClientRect().left,
-                  placeholder:n.getAttribute('placeholder'),note:n.value,visible:host.style.display!=='none',
+                  placeholder:n.getAttribute('placeholder'),note:n.textContent,visible:host.style.display!=='none',
                   bottom:host.getBoundingClientRect().bottom,viewport:innerHeight,
                   editorVisible:n.getBoundingClientRect().height>=58};
             """)
-        self.wait.until(lambda _: layout()["note"] == "Chrome text")
+        self.wait.until(lambda _: layout()["note"] == "Apri nota privata")
         state=layout()
         self.assertEqual(["❓","❌"], state["controls"])
         for key in ("allInHeader","accessible","editorVisible"):
@@ -572,8 +563,8 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self.assertGreater(state["emptySpace"], 100)
         self.assertEqual("❓ ❌",state["headerText"])
         # Keyboard activation uses the same pairing action.
-        self.driver.execute_script(f"{root}.querySelector('.link').focus()")
-        self.driver.execute_script(f"return {root}.querySelector('.link')").send_keys(Keys.ENTER)
+        self._overlay_script("overlay.querySelector('.link').focus()")
+        ActionChains(self.driver).send_keys(Keys.ENTER).perform()
         self.assertTrue(self.driver.execute_script("return fixtureMessages.some(m=>m.type==='context:arm')"))
         self.driver.execute_script("""
             fixtureContext.twin={codex_thread:'fixture-thread'};
@@ -585,19 +576,19 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self.assertTrue(layout()["editorVisible"])
         self.assertEqual("🔗 🗑 ❌",layout()["headerText"])
         self.assertFalse(layout()["forbidden"])
-        self.driver.execute_script(f"{root}.querySelector('.switch').click()")
+        self._overlay_element(".switch").click()
         self.assertTrue(self.driver.execute_script("return fixtureMessages.some(m=>m.type==='context:switch')"))
         self.driver.execute_script("fixtureFailUnlink=true")
-        self.driver.execute_script(f"{root}.querySelector('.unlink').click()")
+        self._overlay_element(".unlink").click()
         self.assertEqual(["🔗","🗑","❌"], layout()["controls"])
         self.driver.execute_script("fixtureFailUnlink=false")
-        self.driver.execute_script(f"{root}.querySelector('.unlink').click()")
+        self._overlay_element(".unlink").click()
         self.wait.until(lambda _: layout()["controls"] == ["❓","❌"])
-        self.assertEqual("Chrome text", layout()["note"])
+        self.assertEqual("Apri nota privata", layout()["note"])
         self.assertEqual(["Codex text",True],self.driver.execute_script("return [fixtureContext.codex_note,fixtureContext.notes_independent]"))
         self.assertTrue(self.driver.execute_script("return fixtureMessages.some(m=>m.type==='context:read')"))
         # The blank part of the header still handles real pointer dragging.
-        head=self.driver.execute_script(f"return {root}.querySelector('.head')")
+        head=self._overlay_element(".head")
         before=self.driver.execute_script("return document.getElementById('chrome-codex-switcher-host').offsetLeft")
         ActionChains(self.driver).move_to_element_with_offset(head,-head.size['width']/2+10,0).click_and_hold().move_by_offset(35,20).release().perform()
         self.wait.until(lambda _: self.driver.execute_script("return document.getElementById('chrome-codex-switcher-host').offsetLeft") > before)
@@ -605,19 +596,10 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self.wait.until(lambda _: layout()["bottom"]<=layout()["viewport"])
         self.assertTrue(layout()["editorVisible"])
         self.driver.execute_cdp_cmd("Emulation.clearDeviceMetricsOverride",{})
-        self.driver.execute_script(f"{root}.querySelector('.close').click()")
-        self.assertFalse(layout()["visible"])
-        self.assertEqual("Chrome text",layout()["note"])
-        self.driver.execute_script(f"""
-            const n={root}.querySelector('.note');
-            n.value='pending old context';n.dispatchEvent(new Event('input'));
-            fixtureContext={{...fixtureContext,id:'second-context',note:'Second note',hidden:false,twin:{{codex_thread:'second-thread'}}}};
-            fixtureRefresh();
-        """)
-        self.wait.until(lambda _: layout()["note"] == "Second note")
-        self.assertEqual(["🔗","🗑","❌"],layout()["controls"])
-        self.wait.until(lambda _: self.driver.execute_script("return fixtureMessages.some(m=>m.type==='context:note'&&m.contextId==='overlay-fixture'&&m.note==='pending old context')"))
-        self.assertEqual("Second note",layout()["note"])
+        self._overlay_element(".note").click()
+        self.assertTrue(self.driver.execute_script(
+            "return fixtureMessages.some(m=>m.type==='context:open-note'&&m.contextId==='overlay-fixture')"
+        ))
 
     def test_automation_pause_preserves_normal_overlay_input_and_saved_state(self) -> None:
         self.driver.get(self._url("automation-pause", "overlay"))
@@ -625,17 +607,10 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self.driver.execute_script("document.getElementById('chrome-codex-switcher-host').remove()")
         for name in ("tests/e2e/overlay_fixture.js", "extension/content.js"):
             self.driver.execute_script((ROOT / name).read_text())
-        self.wait.until(lambda _: self._snapshot()["note"] == "Chrome text")
-        root="document.getElementById('chrome-codex-switcher-host').shadowRoot"
-        note=self.driver.execute_script(f"return {root}.querySelector('.note')")
-        # The ordinary mouse gesture remains fully usable, without modifiers.
-        ActionChains(self.driver).move_to_element(note).click().send_keys(' edited').perform()
-        self.assertEqual('Chrome text edited', self._snapshot()['note'])
-        self.wait.until(lambda _: self.driver.execute_script("return fixtureContext.note") == 'Chrome text edited')
+        self.wait.until(lambda _: self._overlay_element(".note").is_displayed())
         before=self._snapshot()
-        self.driver.execute_script("""
-            const h=document.getElementById('chrome-codex-switcher-host');
-            const r=h.shadowRoot.querySelector('.note').getBoundingClientRect();
+        self._overlay_script("""
+            const r=overlay.querySelector('.note').getBoundingClientRect();
             const b=document.createElement('button'); b.id='covered-page-button';
             b.textContent='Page clicks: 0';
             b.style.cssText=`position:fixed;left:${r.x+10}px;top:${r.y+10}px;width:140px;height:28px`;
@@ -662,7 +637,7 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         shortcut()
         self.assertEqual('visible', self.driver.execute_script("return getComputedStyle(document.getElementById('chrome-codex-switcher-host')).visibility"))
         self.assertEqual(before, self._snapshot())
-        close=self.driver.execute_script(f"return {root}.querySelector('.close')")
+        close=self._overlay_element(".close")
         close.click()
         self.assertTrue(self._snapshot()['hidden'])
         # A pre-existing saved hidden preference must survive pause/resume too.
@@ -674,11 +649,11 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self.driver.get(self._url("legacy-collapse", "seed"))
         self._wait_extension()
         context=self._context_for_url(self._canonical_url("legacy-collapse"))
-        self._post("/api/ui",{"context_id":context["id"],"collapsed":True})
+        self._api("/api/ui",{"context_id":context["id"],"collapsed":True})
         self.driver.refresh()
         self._wait_extension()
-        state=self.driver.execute_script("""
-            const r=document.getElementById('chrome-codex-switcher-host').shadowRoot;
+        state=self._overlay_script("""
+            const r=overlay;
             return {height:r.querySelector('.note').getBoundingClientRect().height,button:!!r.querySelector('.collapse')};
         """)
         self.assertGreaterEqual(state['height'],58)
@@ -689,23 +664,33 @@ class NoteStatePersistenceE2E(unittest.TestCase):
         self.driver.get(self._url("unlink-real", "pair"))
         self._wait_extension()
         context = self._context_for_url(self._canonical_url("unlink-real"))
-        root = "document.getElementById('chrome-codex-switcher-host').shadowRoot"
-        self.driver.execute_script(f"{root}.querySelector('.link').click()")
+        self._overlay_element(".link").click()
         # Wait for the click to arm pairing before delivering the clipboard link.
-        self.wait.until(lambda _: self.driver.execute_script(f"return {root}.querySelector('.flash').textContent.includes('Now open')"))
-        self._post("/api/clipboard", {"text":"codex://threads/e2e-unlink"})
-        self.wait.until(lambda _: self.driver.execute_script(f"return !{root}.querySelector('.unlink').hidden"))
-        self._post("/api/note-mode", {"context_id":context["id"],"independent":True,"source":"chrome","note":"Chrome survives"})
-        self._post("/api/note", {"context_id":context["id"],"surface":"codex","note":"Codex survives"})
+        self.wait.until(lambda _: "conferma" in self._overlay_element(".flash").text)
+        thread = "11111111-2222-4333-8444-555555555555"
+        self._api("/api/clipboard", {"text": f"codex://threads/{thread}"})
+        proposal = self._api("/api/link/proposal")["proposal"]
+        self.assertEqual(thread, proposal["thread"])
+        self.assertFalse(self._overlay_element(".unlink").is_displayed())
+        original = self.driver.current_window_handle
+        self.driver.switch_to.new_window("tab")
+        self.driver.get("chrome-extension://mfpomnbkkfklealhaacbnmelpgpggglg/sidepanel.html")
+        self.wait.until(lambda driver: driver.find_element("css selector", "header section button")).click()
+        self.wait.until(lambda _: self._api("/api/link/proposal")["proposal"] is None)
+        self.driver.close()
+        self.driver.switch_to.window(original)
+        self.wait.until(lambda _: self._overlay_element(".unlink").is_displayed())
+        self._api("/api/note-mode", {"context_id":context["id"],"independent":True,"source":"chrome","note":"Chrome survives"})
+        self._api("/api/note", {"context_id":context["id"],"surface":"codex","note":"Codex survives"})
         self.driver.refresh()
         self._wait_extension()
-        self.driver.execute_script(f"{root}.querySelector('.unlink').click()")
-        self.wait.until(lambda _: self.driver.execute_script(f"return !{root}.querySelector('.link').hidden"))
+        self._overlay_element(".unlink").click()
+        self.wait.until(lambda _: self._overlay_element(".link").is_displayed())
         after = self._context_for_url(self._canonical_url("unlink-real"))
         self.assertEqual(("Chrome survives","Codex survives",1),(after["note"],after["codex_note"],after["notes_independent"]))
         self.driver.refresh()
         self._wait_extension()
-        self.assertTrue(self.driver.execute_script(f"return {root}.querySelector('.unlink').hidden"))
+        self.assertFalse(self._overlay_element(".unlink").is_displayed())
 
     def test_daemon_dashboard_is_not_an_overlay_target(self) -> None:
         self.driver.get(f"http://127.0.0.1:{DAEMON_PORT}/ui/search")
