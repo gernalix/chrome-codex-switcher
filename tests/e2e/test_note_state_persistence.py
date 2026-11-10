@@ -268,29 +268,20 @@ class NoteStatePersistenceE2E(unittest.TestCase):
             "hidden": True,
         }
         self._set_note(note_text)
-        self.driver.execute_script(
+        self._overlay_script(
             """
-            const host = document.getElementById("chrome-codex-switcher-host");
-            for (const [index, key] of ["left", "top", "width", "height"].entries()) {
-              host.style[key] = arguments[index] + "px";
-            }
+            const host = overlay.host;
+            const box = overlay.querySelector(".box");
+            host.style.left = arguments[0] + "px";
+            host.style.top = arguments[1] + "px";
+            // The browser's resize control changes the box. Observe the same
+            // element and wait for its persisted geometry before hiding it.
+            box.style.width = arguments[2] + "px";
+            box.style.height = arguments[3] + "px";
             """,
             expected["x"], expected["y"], expected["width"], expected["height"],
         )
-        # Read the saved note from the temporary store before exercising overlay controls.
-        deadline = time.time() + 8
-        while time.time() < deadline:
-            with sqlite3.connect(self.db_path) as db:
-                row = db.execute(
-                    "SELECT note FROM contexts WHERE url=? ORDER BY updated_at DESC LIMIT 1",
-                    (self.current_canonical_url,),
-                ).fetchone()
-            if row and row[0] == note_text:
-                break
-            time.sleep(0.1)
-        else:
-            self.fail(f"note debounce did not persist {note_text!r}: {row!r}")
-        # The ResizeObserver persists geometry through the normal content-script path.
+        self._wait_db_state({**expected, "hidden": False})
         self._overlay_element(".close").click()
         self._wait_db_state(expected)
         return expected
