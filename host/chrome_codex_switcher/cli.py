@@ -24,7 +24,7 @@ def request(path: str, payload: dict | None = None, *, timeout: float = 4.0) -> 
         BASE + path,
         data=data,
         method="POST" if payload is not None else "GET",
-        headers={"Content-Type": "application/json"} if payload is not None else {},
+        headers={"X-CCS-Request": "1", **({"Content-Type": "application/json"} if payload is not None else {})},
     )
     with urlopen(req, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))

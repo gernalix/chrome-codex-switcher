@@ -246,14 +246,6 @@ def _verify_prompt(
     binding_response = call(f"/api/prompt?prompt_id={prompt_id}")
     binding = binding_response.get("binding") if binding_response.get("ok") else None
 
-    if not isinstance(binding, dict) or not binding.get("context_id"):
-        ack = control("ensure")
-        if not ack.get("ok"):
-            result["blocker"] = f"chrome_context_ensure_failed:{ack.get('error')}"
-            return result
-        result["repair"].append("chrome_context")
-        binding_response = call(f"/api/prompt?prompt_id={prompt_id}")
-        binding = binding_response.get("binding") if binding_response.get("ok") else None
 
     if not isinstance(binding, dict) or not binding.get("context_id"):
         result["blocker"] = "chrome_context_missing"
@@ -267,34 +259,8 @@ def _verify_prompt(
         return result
 
     if not binding.get("codex_thread") or not binding.get("codex_deep_link"):
-        discovered = discover_codex_session(prompt_id, session_root=session_root)
-        if not discovered:
-            result["blocker"] = "codex_thread_missing_or_ambiguous"
-            gates["session_discovery"] = False
-            return result
-        armed = call(
-            "/api/prompt/arm",
-            {
-                "prompt_id": prompt_id,
-                "context_id": context_id,
-                "url": context.get("url") or binding.get("url") or "",
-                "title": context.get("title") or binding.get("title") or "",
-            },
-        )
-        if not armed.get("ok"):
-            result["blocker"] = f"prompt_arm_failed:{armed.get('error')}"
-            return result
-        paired = call("/api/clipboard", {"text": discovered["deep_link"]})
-        if not paired.get("ok"):
-            result["blocker"] = f"session_pair_failed:{paired.get('error')}"
-            return result
-        result["repair"].append("codex_thread_from_native_session")
-        gates["session_discovery"] = {
-            "pass": True,
-            "session_id": discovered["session_id"],
-        }
-        binding_response = call(f"/api/prompt?prompt_id={prompt_id}")
-        binding = binding_response.get("binding") if binding_response.get("ok") else None
+        result["blocker"] = "explicit_codex_binding_required"
+        return result
 
     complete = bool(
         isinstance(binding, dict)
@@ -337,6 +303,10 @@ def _verify_prompt(
         result["result"] = "PASS"
         result["blocker"] = None
         result["binding"] = binding
+        return result
+
+    if scope in {"prompt", "note"}:
+        result["blocker"] = "private_note_editor_requires_browser_validation"
         return result
 
     original = {

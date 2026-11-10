@@ -46,7 +46,7 @@ class GnomeOverlayContractTests(unittest.TestCase):
             self.assertNotIn(needle, SOURCE)
         self.assertIn('this._reportRuntime(null, identity.matches, false, identity)', SOURCE)
         self.assertIn('owner-changed', SOURCE)
-        self.assertIn('_focusRequestedChrome()', SOURCE)
+        self.assertNotIn('_focusRequestedChrome()', SOURCE)
 
     def test_runtime_heartbeat_reports_source_version_and_focused_identity(self) -> None:
         self.assertIn("source_version", SOURCE)

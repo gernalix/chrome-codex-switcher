@@ -48,7 +48,7 @@ function card(item){
  open.onclick=async()=>{
   open.disabled=true;
   try{
-   const r=await fetch('/api/activity/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:item.url})});
+   const r=await fetch('/api/activity/open',{method:'POST',headers:{'Content-Type':'application/json','X-CCS-Request':'1'},body:JSON.stringify({url:item.url})});
    const data=await r.json();if(!data.ok)throw Error(data.error||'Apertura non disponibile');
   }catch(error){window.alert(String(error.message||error))}
   finally{open.disabled=false}
@@ -72,7 +72,7 @@ function render(){
 
 }
 async function refresh(){
- try{const r=await fetch('/api/activity',{cache:'no-store'});if(!r.ok)throw Error('bridge offline');snapshot=await r.json();render()}
+ try{const r=await fetch('/api/activity',{cache:'no-store',headers:{'X-CCS-Request':'1'}});if(!r.ok)throw Error('bridge offline');snapshot=await r.json();render()}
  catch{document.querySelector('#count').textContent='Servizio locale non raggiungibile'}
 }
 filter.addEventListener('input',render);source.addEventListener('change',render);

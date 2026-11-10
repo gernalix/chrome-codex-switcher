@@ -34,6 +34,16 @@ class AppTests(unittest.TestCase):
         self.overlay_path = Path(self.tmp.name) / "overlay.json"
         os.environ["CCS_OVERLAY_PATH"] = str(self.overlay_path)
 
+    def copy_and_confirm(self, text, codex_title=None):
+        observed = self.app.handle_clipboard(text)
+        self.assertEqual(observed.get("action"), "confirmation_required")
+        result = self.app.confirm_clipboard_proposal(observed["proposal"]["id"])
+        self.assertTrue(result["ok"])
+        # A separate, explicit test observation supplies the active identity.
+        thread = observed["proposal"]["thread"]
+        self.app.handle_codex_ui_state(True, codex_title or "Fixture Codex", thread)
+        return result
+
     def tearDown(self):
         if self._old_overlay_path is None:
             os.environ.pop("CCS_OVERLAY_PATH", None)
@@ -44,29 +54,29 @@ class AppTests(unittest.TestCase):
     def test_a11y_watcher_delivers_title_and_exact_thread_to_app(self):
         callback = Mock(wraps=self.app.handle_codex_ui_state)
         watcher = CodexA11yWatch(callback, stable_samples=1)
-        watcher._probe = Mock(return_value=(True, "thread-1", "Chat A"))
+        watcher._probe = Mock(return_value=(True, "b2beec3c-b1d9-512d-86c7-5621fad77cd3", "Chat A"))
         watcher._stop = Mock()
         watcher._stop.wait.side_effect = [False, True]
 
         watcher._run()
 
-        callback.assert_called_once_with(True, "Chat A", "thread-1")
-        self.assertEqual(self.store.get_meta("active_codex_thread"), "thread-1")
-        self.assertEqual(watcher.current_thread, "thread-1")
+        callback.assert_called_once_with(True, "Chat A", "b2beec3c-b1d9-512d-86c7-5621fad77cd3")
+        self.assertEqual(self.store.get_meta("active_codex_thread"), "b2beec3c-b1d9-512d-86c7-5621fad77cd3")
+        self.assertEqual(watcher.current_thread, "b2beec3c-b1d9-512d-86c7-5621fad77cd3")
         self.assertEqual(watcher.current_title, "Chat A")
 
     def test_pair_then_switch_both_directions(self):
         armed = self.app.arm_link(self.context)
         self.assertTrue(armed["ok"])
-        linked = self.app.handle_clipboard("codex://threads/thread-1")
+        linked = self.copy_and_confirm("codex://threads/b2beec3c-b1d9-512d-86c7-5621fad77cd3")
         self.assertEqual(linked["action"], "linked")
 
         result = self.app.switch_from_chrome(self.context)
         self.assertTrue(result["ok"])
-        self.open_codex.assert_called_once_with("codex://threads/thread-1")
+        self.open_codex.assert_called_once_with("codex://threads/b2beec3c-b1d9-512d-86c7-5621fad77cd3")
 
         self.app._last_clipboard_at = 0
-        result = self.app.handle_clipboard("codex://threads/thread-1")
+        result = self.copy_and_confirm("codex://threads/b2beec3c-b1d9-512d-86c7-5621fad77cd3")
         self.assertEqual(result["action"], "focus_chrome")
         _seq, events = self.broker.wait_after(0, 0)
         focus = [event for event in events if event["type"] == "focus_chrome"][-1]
@@ -74,20 +84,21 @@ class AppTests(unittest.TestCase):
 
     def test_duplicate_clipboard_delivery_is_ignored(self):
         self.app.arm_link(self.context)
-        first = self.app.handle_clipboard("codex://threads/thread-1")
-        second = self.app.handle_clipboard("codex://threads/thread-1")
-        self.assertEqual(first["action"], "linked")
-        self.assertTrue(second["duplicate"])
+        first = self.app.handle_clipboard("codex://threads/b2beec3c-b1d9-512d-86c7-5621fad77cd3")
+        second = self.app.handle_clipboard("codex://threads/b2beec3c-b1d9-512d-86c7-5621fad77cd3")
+        self.assertEqual(first["action"], "confirmation_required")
+        self.assertEqual(first["proposal"]["id"], second["proposal"]["id"])
+        self.assertIsNone(self.store.twin_by_context("ctx-1"))
         _seq, events = self.broker.wait_after(0, 0)
         self.assertFalse(any(event["type"] == "focus_chrome" for event in events))
 
     def test_one_to_one_relink(self):
         self.app.arm_link(self.context)
-        self.app.handle_clipboard("codex://threads/one")
+        self.copy_and_confirm("codex://threads/d6b2cedc-8af0-578f-866f-1f23d6b4a95e")
         self.app.arm_link(self.context)
-        self.app.handle_clipboard("codex://threads/two")
-        self.assertIsNone(self.store.twin_by_thread("one"))
-        self.assertEqual(self.store.twin_by_thread("two")["context_id"], "ctx-1")
+        self.copy_and_confirm("codex://threads/02c42732-f316-507b-978b-290d06cd5c97")
+        self.assertIsNone(self.store.twin_by_thread("d6b2cedc-8af0-578f-866f-1f23d6b4a95e"))
+        self.assertEqual(self.store.twin_by_thread("02c42732-f316-507b-978b-290d06cd5c97")["context_id"], "ctx-1")
 
     def test_prompt_binding_is_explicit_and_survives_codex_pairing(self):
         self.app.upsert_context(self.context)
@@ -97,12 +108,12 @@ class AppTests(unittest.TestCase):
 
         armed = self.app.arm_prompt({**self.context, "prompt_id": "514458"})
         self.assertTrue(armed["ok"])
-        linked = self.app.handle_clipboard("codex://threads/thread-prompt")
+        linked = self.copy_and_confirm("codex://threads/3fdbbf42-f613-547e-87ed-c6763b80dd68")
         self.assertIn(linked["action"], {"linked", "active_thread_updated", "focus_chrome"})
         binding = self.store.prompt_binding("514458")
-        self.assertEqual("thread-prompt", binding["codex_thread"])
-        self.assertEqual("codex://threads/thread-prompt", binding["codex_deep_link"])
-        self.assertEqual("ctx-1", self.store.twin_by_thread("thread-prompt")["context_id"])
+        self.assertEqual("3fdbbf42-f613-547e-87ed-c6763b80dd68", binding["codex_thread"])
+        self.assertEqual("codex://threads/3fdbbf42-f613-547e-87ed-c6763b80dd68", binding["codex_deep_link"])
+        self.assertEqual("ctx-1", self.store.twin_by_thread("3fdbbf42-f613-547e-87ed-c6763b80dd68")["context_id"])
 
     def test_dashboard_contexts_include_prompt_id_and_codex_title(self):
         self.app.upsert_context(self.context)
@@ -173,10 +184,10 @@ class AppTests(unittest.TestCase):
     def test_prompt_pairing_is_atomic_and_context_bound(self):
         self.app.upsert_context(self.context)
         self.app.arm_prompt({**self.context, "prompt_id": "514458"})
-        self.app.handle_clipboard("codex://threads/thread-prompt")
+        self.copy_and_confirm("codex://threads/3fdbbf42-f613-547e-87ed-c6763b80dd68")
         binding = self.store.prompt_binding("514458")
-        self.assertEqual(binding["context_id"], self.store.twin_by_thread("thread-prompt")["context_id"])
-        self.assertEqual(binding["codex_deep_link"], "codex://threads/thread-prompt")
+        self.assertEqual(binding["context_id"], self.store.twin_by_thread("3fdbbf42-f613-547e-87ed-c6763b80dd68")["context_id"])
+        self.assertEqual(binding["codex_deep_link"], "codex://threads/3fdbbf42-f613-547e-87ed-c6763b80dd68")
         self.assertIsNone(self.store.get_meta("pending_prompt"))
         self.app.upsert_context({"context_id": "other-context", "url": "https://example.com/"})
         with self.assertRaisesRegex(ValueError, "prompt_context_mismatch"):
@@ -198,8 +209,10 @@ class AppTests(unittest.TestCase):
         )
 
         self.assertTrue(recovered["ok"])
-        self.assertEqual("chrome", recovered["stage"])
-        self.assertEqual("native_session", recovered["source"])
+        self.assertEqual("confirmation", recovered["stage"])
+        self.assertEqual("candidate", recovered["source"])
+        self.assertIsNone(self.store.prompt_binding("514458"))
+        self.assertTrue(self.app.confirm_clipboard_proposal(recovered["proposal"]["id"])["ok"])
         partial = self.store.prompt_binding("514458")
         self.assertIsNone(partial["context_id"])
         self.assertEqual(session_id, partial["codex_thread"])
@@ -221,11 +234,11 @@ class AppTests(unittest.TestCase):
         self.assertEqual("codex", armed["stage"])
         self.assertEqual("clipboard", armed["source"])
 
-        linked = self.app.handle_clipboard("codex://threads/manual-thread")
+        linked = self.copy_and_confirm("codex://threads/42fa908d-8aef-5b49-9697-e20f65d3bf96")
         self.assertTrue(linked["ok"])
         binding = self.store.prompt_binding("514458")
         self.assertIsNone(binding["context_id"])
-        self.assertEqual("manual-thread", binding["codex_thread"])
+        self.assertEqual("42fa908d-8aef-5b49-9697-e20f65d3bf96", binding["codex_thread"])
 
     def test_prompt_context_cannot_be_stolen_by_another_prompt(self):
         self.app.upsert_context(self.context)
@@ -238,12 +251,12 @@ class AppTests(unittest.TestCase):
         self.store.bind_prompt(
             "514458",
             context_id="ctx-1",
-            codex_thread="thread-prompt",
-            codex_deep_link="codex://threads/thread-prompt",
+            codex_thread="3fdbbf42-f613-547e-87ed-c6763b80dd68",
+            codex_deep_link="codex://threads/3fdbbf42-f613-547e-87ed-c6763b80dd68",
         )
         result = self.app.open_prompt_codex({"prompt_id": "514458"})
         self.assertTrue(result["ok"])
-        self.open_codex.assert_called_once_with("codex://threads/thread-prompt")
+        self.open_codex.assert_called_once_with("codex://threads/3fdbbf42-f613-547e-87ed-c6763b80dd68")
 
     def test_launch_prompt_codex_opens_new_thread_without_chrome_context(self):
         self.app.prompt_text = Mock(return_value={
@@ -277,15 +290,15 @@ class AppTests(unittest.TestCase):
         self.store.bind_prompt(
             "514458",
             context_id="ctx-1",
-            codex_thread="thread-prompt",
-            codex_deep_link="codex://threads/thread-prompt",
+            codex_thread="3fdbbf42-f613-547e-87ed-c6763b80dd68",
+            codex_deep_link="codex://threads/3fdbbf42-f613-547e-87ed-c6763b80dd68",
         )
 
         result = self.app.launch_prompt_codex({"prompt_id": "514458"})
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["mode"], "existing")
-        self.open_codex.assert_called_once_with("codex://threads/thread-prompt")
+        self.open_codex.assert_called_once_with("codex://threads/3fdbbf42-f613-547e-87ed-c6763b80dd68")
 
     def test_launch_prompt_codex_refuses_missing_prompt_spec(self):
         self.app.prompt_text = Mock(return_value={
@@ -319,7 +332,7 @@ class AppTests(unittest.TestCase):
         self.app.set_note({"context_id": "ctx-roll", "note": "keep continuity"})
         self.store.add_context_prompt_id("ctx-roll", "514458")
         self.app.arm_link({"context_id": "ctx-roll", "url": old_url, "title": "Worker"})
-        self.app.handle_clipboard("codex://threads/thread-roll")
+        self.copy_and_confirm("codex://threads/30fdfe35-2e1c-5b42-86ea-6d3b88d8b166")
 
         result = self.app.replace_context_url({
             "context_id": "ctx-roll",
@@ -332,7 +345,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(new_url, context["url"])
         self.assertEqual("keep continuity", context["note"])
         self.assertEqual("keep continuity", context["codex_note"])
-        self.assertEqual("thread-roll", self.store.twin_by_context("ctx-roll")["codex_thread"])
+        self.assertEqual("30fdfe35-2e1c-5b42-86ea-6d3b88d8b166", self.store.twin_by_context("ctx-roll")["codex_thread"])
         self.assertEqual(["514458"], [row["prompt_id"] for row in self.store.context_prompt_index("ctx-roll")])
 
         reopened = self.app.upsert_context({
@@ -491,10 +504,10 @@ class AppTests(unittest.TestCase):
     def test_two_by_two_pairing_and_ui_state_remain_isolated(self):
         other = {"context_id": "ctx-2", "url": "https://chatgpt.com/c/def", "title": "Chat B"}
         self.app.arm_link(self.context)
-        self.app.handle_clipboard("codex://threads/thread-1", codex_title="Same visible title")
+        self.copy_and_confirm("codex://threads/b2beec3c-b1d9-512d-86c7-5621fad77cd3", codex_title="Same visible title")
         self.app._last_clipboard_at = 0
         self.app.arm_link(other)
-        self.app.handle_clipboard("codex://threads/thread-2", codex_title="Same visible title")
+        self.copy_and_confirm("codex://threads/1b71a7ed-8f42-5174-8672-ae8a7e022862", codex_title="Same visible title")
 
         self.app.set_ui({
             "context_id": "ctx-1",
@@ -509,8 +522,8 @@ class AppTests(unittest.TestCase):
             "collapsed": True,
         })
 
-        self.assertEqual(self.store.twin_by_context("ctx-1")["codex_thread"], "thread-1")
-        self.assertEqual(self.store.twin_by_context("ctx-2")["codex_thread"], "thread-2")
+        self.assertEqual(self.store.twin_by_context("ctx-1")["codex_thread"], "b2beec3c-b1d9-512d-86c7-5621fad77cd3")
+        self.assertEqual(self.store.twin_by_context("ctx-2")["codex_thread"], "1b71a7ed-8f42-5174-8672-ae8a7e022862")
         self.assertIsNone(self.store.thread_by_codex_title("Same visible title"))
         first = self.store.get_context("ctx-1")
         second = self.store.get_context("ctx-2")
@@ -518,60 +531,39 @@ class AppTests(unittest.TestCase):
         self.assertTrue(first["hidden"])
         self.assertTrue(second["collapsed"])
 
-    def test_accessible_title_resolves_thread_and_hides_stale_overlay(self):
+    def test_accessible_title_requires_an_exact_thread(self):
         self.app.arm_link(self.context)
-        unknown = self.app.handle_codex_ui_state(True, "Indaga logout Fedora e profilo")
-        self.assertEqual(unknown["action"], "overlay_hidden")
-        state = json.loads(self.overlay_path.read_text(encoding="utf-8"))
-        self.assertFalse(state["visible"])
-
-        linked = self.app.handle_clipboard(
-            "codex://threads/thread-1",
-            codex_title="Indaga logout Fedora e profilo",
-        )
-        self.assertEqual(linked["action"], "linked")
-        self.assertEqual(
-            self.store.thread_by_codex_title("Indaga logout Fedora e profilo"),
-            "thread-1",
-        )
-
-        resolved = self.app.handle_codex_ui_state(True, "Indaga logout Fedora e profilo")
-        self.assertEqual(resolved["action"], "active_thread_resolved")
-        state = json.loads(self.overlay_path.read_text(encoding="utf-8"))
-        self.assertTrue(state["visible"])
-        self.assertEqual(state["codex_thread"], "thread-1")
-
-        stale = self.app.handle_codex_ui_state(True, "Another Codex chat")
-        self.assertEqual(stale["action"], "overlay_hidden")
-        state = json.loads(self.overlay_path.read_text(encoding="utf-8"))
-        self.assertFalse(state["visible"])
-        self.assertEqual(state["reason"], "active_thread_unmapped")
+        self.copy_and_confirm("codex://threads/b2beec3c-b1d9-512d-86c7-5621fad77cd3", codex_title="Fixture Codex")
+        observed = self.app.handle_codex_ui_state(True, "Fixture Codex")
+        self.assertEqual(observed["action"], "overlay_hidden")
+        self.assertEqual(observed["reason"], "exact_thread_required")
+        self.assertIsNone(self.store.get_meta("active_codex_thread"))
 
     def test_exact_a11y_thread_wins_when_visible_titles_are_ambiguous(self):
         other = {"context_id": "ctx-2", "url": "https://chatgpt.com/c/def", "title": "Chat B"}
         self.app.arm_link(self.context)
-        self.app.handle_clipboard("codex://threads/thread-1", codex_title="Same visible title")
+        self.copy_and_confirm("codex://threads/b2beec3c-b1d9-512d-86c7-5621fad77cd3", codex_title="Same visible title")
         self.app._last_clipboard_at = 0
         self.app.arm_link(other)
-        self.app.handle_clipboard("codex://threads/thread-2", codex_title="Same visible title")
+        self.copy_and_confirm("codex://threads/1b71a7ed-8f42-5174-8672-ae8a7e022862", codex_title="Same visible title")
 
         self.assertIsNone(self.store.thread_by_codex_title("Same visible title"))
         resolved = self.app.handle_codex_ui_state(
-            True, "Same visible title", "thread-2"
+            True, "Same visible title", "1b71a7ed-8f42-5174-8672-ae8a7e022862"
         )
 
         self.assertEqual("active_thread_resolved", resolved["action"])
         self.assertEqual("a11y_thread", resolved["resolution"])
-        self.assertEqual("thread-2", resolved["thread"])
+        self.assertEqual("1b71a7ed-8f42-5174-8672-ae8a7e022862", resolved["thread"])
         state = json.loads(self.overlay_path.read_text(encoding="utf-8"))
         self.assertTrue(state["visible"])
-        self.assertEqual("thread-2", state["codex_thread"])
+        self.assertEqual("1b71a7ed-8f42-5174-8672-ae8a7e022862", state["codex_thread"])
         self.assertEqual("ctx-2", state["context_id"])
 
     def test_thread_change_invalidation_clears_cache_and_cannot_resurrect_old_overlay(self):
         self.app.arm_link(self.context)
-        self.app.handle_clipboard("codex://threads/thread-1", codex_title="Chat A")
-        self.assertEqual("thread-1", self.store.get_meta("active_codex_thread"))
+        self.copy_and_confirm("codex://threads/b2beec3c-b1d9-512d-86c7-5621fad77cd3", codex_title="Chat A")
+        self.assertEqual("b2beec3c-b1d9-512d-86c7-5621fad77cd3", self.store.get_meta("active_codex_thread"))
 
         self.app.invalidate_codex_overlay("sidebar_pointer")
         self.assertIsNone(self.store.get_meta("active_codex_thread"))
@@ -585,7 +577,7 @@ class AppTests(unittest.TestCase):
 
     def test_unfocused_codex_clears_active_thread_and_hides_overlay(self):
         self.app.arm_link(self.context)
-        self.app.handle_clipboard("codex://threads/thread-1", codex_title="Chat A")
+        self.copy_and_confirm("codex://threads/b2beec3c-b1d9-512d-86c7-5621fad77cd3", codex_title="Chat A")
 
         result = self.app.handle_codex_ui_state(False, None)
 
@@ -598,14 +590,14 @@ class AppTests(unittest.TestCase):
     def test_bind_prompt_repairs_existing_thread_only_binding(self):
         self.store.bind_prompt(
             "514458",
-            codex_thread="thread-prompt",
-            codex_deep_link="codex://threads/thread-prompt",
+            codex_thread="3fdbbf42-f613-547e-87ed-c6763b80dd68",
+            codex_deep_link="codex://threads/3fdbbf42-f613-547e-87ed-c6763b80dd68",
         )
         result = self.app.bind_prompt({**self.context, "prompt_id": "514458"})
         self.assertTrue(result["ok"])
         binding = self.store.prompt_binding("514458")
         self.assertEqual("ctx-1", binding["context_id"])
-        twin = self.store.twin_by_thread("thread-prompt")
+        twin = self.store.twin_by_thread("3fdbbf42-f613-547e-87ed-c6763b80dd68")
         self.assertEqual("ctx-1", twin["context_id"])
 
     def test_control_plane_request_and_ack(self):
@@ -634,7 +626,7 @@ class AppTests(unittest.TestCase):
             "focused_wm_class": "chatgpt",
             "visible": "true",
             "context_id": "ctx-1",
-            "codex_thread": "thread-1",
+            "codex_thread": "b2beec3c-b1d9-512d-86c7-5621fad77cd3",
             "note": "hello",
             "notes_independent": "0",
         })
@@ -658,8 +650,8 @@ class AppTests(unittest.TestCase):
 
     def test_unlink_preserves_separate_notes_and_prompt_binding(self):
         self.app.arm_link(self.context)
-        self.app.handle_clipboard("codex://threads/thread-unlink")
-        self.store.link_prompt("514458", "ctx-1", "thread-unlink", "codex://threads/thread-unlink")
+        self.copy_and_confirm("codex://threads/0ae3b742-7875-50b4-9ccc-0d8a73d324d0")
+        self.store.link_prompt("514458", "ctx-1", "0ae3b742-7875-50b4-9ccc-0d8a73d324d0", "codex://threads/0ae3b742-7875-50b4-9ccc-0d8a73d324d0")
         self.store.set_note_mode("ctx-1", True, source="chrome", current_note="Chrome text")
         self.store.set_note("ctx-1", "Codex text", surface="codex")
         before = self.store.get_context("ctx-1")
@@ -676,13 +668,13 @@ class AppTests(unittest.TestCase):
         self.store.link_prompt(
             "514458",
             "ctx-1",
-            "thread-prompt",
-            "codex://threads/thread-prompt",
+            "3fdbbf42-f613-547e-87ed-c6763b80dd68",
+            "codex://threads/3fdbbf42-f613-547e-87ed-c6763b80dd68",
         )
         result = self.app.open_prompt_codex({"prompt_id": "514458"})
         self.assertTrue(result["ok"])
-        self.assertEqual("thread-prompt", self.app._expected_codex_thread)
-        self.open_codex.assert_called_once_with("codex://threads/thread-prompt")
+        self.assertEqual("3fdbbf42-f613-547e-87ed-c6763b80dd68", self.app._expected_codex_thread)
+        self.open_codex.assert_called_once_with("codex://threads/3fdbbf42-f613-547e-87ed-c6763b80dd68")
 
     def test_store_migrates_existing_note_column_without_data_loss(self):
         legacy_path = Path(self.tmp.name) / "legacy.sqlite3"

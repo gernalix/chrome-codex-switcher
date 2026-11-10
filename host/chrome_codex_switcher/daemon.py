@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -24,6 +25,7 @@ from .activity_ui import activity_dashboard_html
 from .broker import EventBroker
 from .context_bindings import ContextBindingsMixin, PROMPT_ID_RE
 from .clipboard_binding import ClipboardBindingMixin, CLIPBOARD_DUPLICATE_WINDOW
+from .http_boundary import same_user_tcp_peer
 from . import __version__
 from .store import Store
 from .pn_cards import PnCards
@@ -39,6 +41,8 @@ LOCAL_ORIGINS = {
     f"http://127.0.0.1:{PORT}",
     f"http://localhost:{PORT}",
 }
+LOCAL_HOSTS = {origin.removeprefix("http://") for origin in LOCAL_ORIGINS}
+REQUEST_HEADER = "X-CCS-Request"
 PENDING_TTL = 120.0
 PROMPT_PENDING_TTL = 10 * 60.0
 PROMPT_CODEX_DISCOVERY_AGE = 30 * 24 * 60 * 60.0
@@ -240,39 +244,11 @@ class App(ContextBindingsMixin, ClipboardBindingMixin):
             self._write_overlay_hidden("active_thread_unknown")
             return {"ok": True, "action": "overlay_hidden", "reason": "active_thread_unknown"}
 
-        previous = self._active_codex_title
         self._active_codex_title = clean
-        thread = self.store.thread_by_codex_title(clean)
-
-        expected = self._expected_codex_thread
-        if not thread and expected and now() <= self._expected_until:
-            before = self._expected_previous_title
-            if before is None or clean.casefold() != before.casefold():
-                self.store.remember_codex_title(expected, clean)
-                thread = expected
-
-        if thread:
-            self._expected_codex_thread = None
-            self._expected_previous_title = None
-            self._expected_until = 0.0
-            self.store.set_meta("active_codex_thread", thread)
-            self._record_codex_resolution(
-                "title_fallback", thread=thread, title=clean
-            )
-            self._write_overlay_for_thread(thread, codex_title=clean)
-            return {
-                "ok": True,
-                "action": "active_thread_resolved",
-                "thread": thread,
-                "title": clean,
-                "resolution": "title_fallback",
-            }
-
-        reason = "active_thread_unmapped" if previous != clean else "active_thread_unresolved"
         self.store.delete_meta("active_codex_thread")
-        self._record_codex_resolution("unknown", title=clean, reason=reason)
-        self._write_overlay_hidden(reason, codex_title=clean)
-        return {"ok": True, "action": "overlay_hidden", "reason": reason, "title": clean}
+        self._record_codex_resolution("unknown", title=clean, reason="exact_thread_required")
+        self._write_overlay_hidden("exact_thread_required", codex_title=clean)
+        return {"ok": True, "action": "overlay_hidden", "reason": "exact_thread_required", "title": clean}
 
     def invalidate_codex_overlay(self, reason: str = "possible_thread_change") -> dict[str, Any]:
         self._active_codex_title = None
@@ -423,25 +399,19 @@ class App(ContextBindingsMixin, ClipboardBindingMixin):
                 if existing and existing.get("context_id")
                 else None
             )
-        if not context_id or not self.store.get_context(context_id):
+        context = self.store.get_context(context_id) if context_id else None
+        if not context:
             raise ValueError("prompt_context_missing")
         pending = {
             "prompt_id": prompt_id,
             "context_id": context_id,
+            "url": context["url"],
             "armed_at": now(),
             "expires_at": now() + PROMPT_PENDING_TTL,
         }
-        self.store.delete_meta("pending_prompt_codex")
         self.store.set_meta("pending_prompt", pending)
         self.broker.emit("prompt_armed", pending)
         return {"ok": True, "pending": pending}
-
-    def _codex_thread_conflict(self, prompt_id: str, thread: str) -> bool:
-        return any(
-            str(item.get("prompt_id") or "") != prompt_id
-            and str(item.get("codex_thread") or "") == thread
-            for item in self.store.list_prompt_bindings()
-        )
 
     def recover_prompt_codex(
         self,
@@ -466,31 +436,6 @@ class App(ContextBindingsMixin, ClipboardBindingMixin):
             session_root=session_root,
             max_age_seconds=PROMPT_CODEX_DISCOVERY_AGE,
         )
-        if discovered:
-            thread = str(discovered["session_id"])
-            deep_link = str(discovered["deep_link"])
-            if self._codex_thread_conflict(prompt_id, thread):
-                return {"ok": False, "error": "prompt_codex_conflict"}
-            context_id = str((current or {}).get("context_id") or "").strip() or None
-            if context_id:
-                binding = self.store.link_prompt(prompt_id, context_id, thread, deep_link)
-                stage = "complete"
-            else:
-                binding = self.store.bind_prompt(
-                    prompt_id,
-                    codex_thread=thread,
-                    codex_deep_link=deep_link,
-                )
-                stage = "chrome"
-            self.store.delete_meta("pending_prompt")
-            self.store.delete_meta("pending_prompt_codex")
-            self.broker.emit("prompt_linked", binding)
-            return {
-                "ok": True,
-                "stage": stage,
-                "source": "native_session",
-                "binding": binding,
-            }
 
         pending = {
             "prompt_id": prompt_id,
@@ -498,9 +443,11 @@ class App(ContextBindingsMixin, ClipboardBindingMixin):
             "expires_at": now() + PROMPT_PENDING_TTL,
             "force": force,
         }
-        self.store.delete_meta("pending_prompt")
         self.store.set_meta("pending_prompt_codex", pending)
-        self.broker.emit("prompt_codex_armed", pending)
+        self.broker.emit("prompt_codex_armed", {"prompt_id": prompt_id})
+        if discovered:
+            proposal = self.handle_clipboard(str(discovered["deep_link"]))
+            return {"ok": True, "stage": "confirmation", "source": "candidate", **proposal}
         return {
             "ok": True,
             "stage": "codex",
@@ -518,8 +465,8 @@ class App(ContextBindingsMixin, ClipboardBindingMixin):
         self._expected_codex_thread = thread
         self._expected_previous_title = self._active_codex_title
         self._expected_until = now() + 8.0
-        self.store.set_meta("active_codex_thread", thread)
-        self._write_overlay_for_thread(thread)
+        self.store.delete_meta("active_codex_thread")
+        self._write_overlay_hidden("awaiting_exact_thread")
         self._open_codex(str(binding["codex_deep_link"]))
         return {"ok": True, "binding": binding}
 
@@ -553,7 +500,6 @@ class App(ContextBindingsMixin, ClipboardBindingMixin):
         # A launch no longer creates or requires a ChatGPT Chrome context.
         # Keep an explicit pending Codex association so the first observed
         # codex:// deep link can bind the new native thread to this PROMPT_ID.
-        self.store.delete_meta("pending_prompt")
         self.store.set_meta(
             "pending_prompt_codex",
             {
@@ -564,7 +510,7 @@ class App(ContextBindingsMixin, ClipboardBindingMixin):
             },
         )
         self.store.set_meta("pending_desktop_launch", launch)
-        self.broker.emit("desktop_launch_requested", launch)
+        self.broker.emit("desktop_launch_requested", {key: value for key, value in launch.items() if key != "prompt_text"})
 
         deep_link = "codex://threads/new"
         self._open_codex(deep_link)
@@ -599,8 +545,8 @@ class App(ContextBindingsMixin, ClipboardBindingMixin):
         self._expected_codex_thread = str(twin["codex_thread"])
         self._expected_previous_title = self._active_codex_title
         self._expected_until = now() + 8.0
-        self.store.set_meta("active_codex_thread", twin["codex_thread"])
-        self._write_overlay_for_thread(twin["codex_thread"])
+        self.store.delete_meta("active_codex_thread")
+        self._write_overlay_hidden("awaiting_exact_thread")
         self._open_codex(twin["codex_deep_link"])
         return {"ok": True, "twin": twin}
 
@@ -671,7 +617,7 @@ class App(ContextBindingsMixin, ClipboardBindingMixin):
             "url": context["url"],
             "title": context.get("title", ""),
         }
-        self.broker.emit("focus_chrome", target)
+        self.broker.emit("focus_chrome", {**target, "issued_at": now()})
         return {"ok": True, "action": "focus_chrome", "target": target}
 
     def open_dashboard_codex(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -699,6 +645,7 @@ class App(ContextBindingsMixin, ClipboardBindingMixin):
         # Reuse CCS's established Chrome-tab focus/open bridge.
         context = next((c for c in self.store.list_contexts() if c["url"] == safe), None)
         self.broker.emit("focus_chrome", {
+            "issued_at": now(),
             "context_id": context["id"] if context else "activity:" + uuid.uuid4().hex,
             "url": safe,
             "title": (context or {}).get("title", ""),
@@ -801,12 +748,12 @@ const searchable=item=>[item.prompt_id,...(item.prompt_ids||[]),item.title,item.
 const controls=PnCardsUI.toolbar(document.querySelector('header'),()=>{selected=0;render()});
 const noteText=item=>[...new Set([item.note,item.codex_note].filter(Boolean))].join('\n\n');
 function select(index){if(!visible.length){selected=0;return}selected=(index+visible.length)%visible.length;[...list.querySelectorAll('.card')].forEach((el,i)=>{const on=i===selected;el.classList.toggle('selected',on);el.setAttribute('aria-selected',on?'true':'false');if(on)el.scrollIntoView({block:'nearest'})})}
-async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),data=await r.json();if(!data.ok)throw new Error(data.error||'azione fallita');return data}
+async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-CCS-Request':'1'},body:JSON.stringify(body)}),data=await r.json();if(!data.ok)throw new Error(data.error||'azione fallita');return data}
 async function action(item,target){if(!item)return;const path=target==='codex'?'/api/dashboard/open-codex':'/api/dashboard/focus-chrome';statusEl.textContent=target==='codex'?'Apro Codex…':'Passo alla scheda Chrome…';try{await post(path,{context_id:item.id});statusEl.textContent=target==='codex'?'Codex aperto':'Comando inviato a Chrome';window.close();}catch(e){statusEl.textContent='Errore: '+e.message}}
 async function editPrompt(item,mode,promptId=null){let value=promptId;if(mode==='add'){value=(window.prompt('PROMPT_ID da associare (6 cifre)')||'').trim();if(!value)return;if(!/^\d{6}$/.test(value)){statusEl.textContent='PROMPT_ID non valido: servono esattamente 6 cifre';return}}try{const endpoint=mode==='add'?'/api/context/prompts/add':'/api/context/prompts/remove';await post(endpoint,{context_id:item.id,prompt_id:value});statusEl.textContent=mode==='add'?'PROMPT_ID aggiunto':'PROMPT_ID rimosso';await load()}catch(e){statusEl.textContent='Errore: '+e.message}}
 function promptRow(item){const row=document.createElement('div');row.className='prompt-ids';const canonical=String(item.prompt_id||'');if(canonical){const chip=document.createElement('span');chip.className='prompt-chip bound';chip.title='Binding canonico';chip.textContent=canonical;row.append(chip)}for(const entry of item.prompt_id_index||[]){const id=String(entry.prompt_id||'');if(!id||id===canonical)continue;const chip=document.createElement('span');chip.className='prompt-chip';chip.title=entry.manual_added?(entry.auto_detected?'Rilevato e aggiunto manualmente':'Aggiunto manualmente'):'Rilevato nella pagina';const label=document.createElement('span');label.textContent=id;const remove=document.createElement('button');remove.className='prompt-remove';remove.textContent='×';remove.title='Rimuovi associazione';remove.onclick=e=>{e.stopPropagation();editPrompt(item,'remove',id)};chip.append(label,remove);row.append(chip)}const add=document.createElement('button');add.className='prompt-add';add.textContent='+ ID';add.title='Aggiungi PROMPT_ID';add.onclick=e=>{e.stopPropagation();editPrompt(item,'add')};row.append(add);return row}
 function render(){const needle=q.value.trim().toLowerCase();visible=PnCardsUI.rows(contexts,needle,controls,searchable);list.textContent='';if(!visible.length){selected=0;const e=document.createElement('div');e.className='empty';e.textContent='Nessun risultato';list.append(e);return}selected=Math.min(selected,visible.length-1);visible.forEach((item,index)=>{const card=document.createElement('section');card.className='card'+(index===selected?' selected':'');card.role='option';card.setAttribute('aria-selected',index===selected?'true':'false');card.onclick=()=>action(item,'chrome');card.onmouseenter=()=>select(index);PnCardsUI.card(card,item,async values=>{await post('/api/pn/manual',values);await load(true)},async note=>{await post('/api/note',{context_id:item.id,note});await load(true)});const nv=noteText(item);if(nv&&!item.pn_card){const note=document.createElement('div');note.className='note';note.textContent=nv;card.append(note)}const title=document.createElement('div');title.className='title';title.textContent=item.title||item.url||'Contesto Chrome senza titolo';card.append(title,promptRow(item));const meta=document.createElement('div');meta.className='meta';const bits=[];if(item.twin?.codex_title)bits.push('Codex: '+item.twin.codex_title);else if(item.twin?.codex_thread)bits.push('Codex thread: '+item.twin.codex_thread);else bits.push('Nessun Codex twin');meta.textContent=bits.join(' · ');card.append(meta);const buttons=document.createElement('div');buttons.className='buttons';const chromeBtn=document.createElement('button');chromeBtn.textContent='Chrome';chromeBtn.onclick=e=>{e.stopPropagation();action(item,'chrome')};buttons.append(chromeBtn);if(item.twin){const codexBtn=document.createElement('button');codexBtn.textContent='Codex';codexBtn.onclick=e=>{e.stopPropagation();action(item,'codex')};buttons.append(codexBtn)}card.append(buttons);list.append(card)})}
-async function load(force=false){try{const r=await fetch('/api/list',{cache:'no-store'}),data=await r.json();contexts=data.contexts||[];statusEl.textContent=contexts.length+' contesti';if(force||(!list.querySelector('details[open]')&&!list.contains(document.activeElement)))render()}catch(e){statusEl.textContent='Daemon non raggiungibile: '+e.message}}
+async function load(force=false){try{const r=await fetch('/api/list',{cache:'no-store',headers:{'X-CCS-Request':'1'}}),data=await r.json();contexts=data.contexts||[];statusEl.textContent=contexts.length+' contesti';if(force||(!list.querySelector('details[open]')&&!list.contains(document.activeElement)))render()}catch(e){statusEl.textContent='Daemon non raggiungibile: '+e.message}}
 q.addEventListener('input',()=>{selected=0;render()});q.addEventListener('keydown',e=>{if(e.key==='ArrowDown'){e.preventDefault();select(selected+1)}else if(e.key==='ArrowUp'){e.preventDefault();select(selected-1)}else if(e.key==='Enter'){e.preventDefault();action(visible[selected]||visible[0],e.shiftKey?'codex':'chrome')}else if(e.key==='Escape'&&q.value){e.preventDefault();q.value='';selected=0;render()}});
 q.focus();load();setInterval(load,5000);</script></body></html>"""
 
@@ -860,6 +807,46 @@ def prompt_action_fallback_html(
     )
 
 
+def prompt_confirmation_html(prompt_id: str, action: str, grant: str) -> str:
+    label = html_lib.escape(PROMPT_UI_ACTIONS[action])
+    return (
+        '<!doctype html><html lang="it"><meta charset="utf-8">'
+        f'<title>{label}</title><h1>{label} · prompt {prompt_id}</h1>'
+        '<p>Conferma questa azione nel bridge locale.</p>'
+        f'<form method="post" action="/ui/prompt/{prompt_id}/{action}">'
+        f'<input type="hidden" name="grant" value="{html_lib.escape(grant, quote=True)}">'
+        '<button type="submit">Conferma</button></form></html>'
+    )
+
+
+class PromptConfirmations:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._grants: dict[str, tuple[str, str, float]] = {}
+
+    def issue(self, prompt_id: str, action: str) -> str:
+        with self._lock:
+            current = time.monotonic()
+            self._grants = {key: value for key, value in self._grants.items() if value[2] > current}
+            if len(self._grants) >= 128:
+                raise ValueError("too_many_pending_confirmations")
+            key = secrets.token_urlsafe(32)
+            self._grants[key] = (prompt_id, action, current + 120)
+            return key
+
+    def consume(self, key: str, prompt_id: str, action: str) -> bool:
+        with self._lock:
+            value = self._grants.get(key)
+            if value is None or value[:2] != (prompt_id, action) or value[2] <= time.monotonic():
+                return False
+            del self._grants[key]
+            return True
+
+
+PROMPT_CONFIRMATIONS = PromptConfirmations()
+PROMPT_UI_ROUTE = re.compile(r"/ui/prompt/(\d{6})/(copy|launch|bind|bind-chrome|bind-codex|chrome|codex|verify)")
+
+
 def run_prompt_fallback_action(prompt_id: str, action: str) -> dict[str, Any]:
     assert APP is not None
     if action == "copy":
@@ -910,19 +897,31 @@ class Handler(BaseHTTPRequestHandler):
             super().log_message(fmt, *args)
 
     def _origin_allowed(self) -> bool:
-        origin = self.headers.get("Origin")
-        # No Origin = trusted local helper/CLI. Browser callers may be the
-        # extension or a same-origin fallback page served by this daemon.
-        return origin is None or origin == EXTENSION_ORIGIN or origin in LOCAL_ORIGINS
+        origins = self.headers.get_all("Origin", [])
+        return not origins or (len(origins) == 1 and origins[0] in LOCAL_ORIGINS | {EXTENSION_ORIGIN})
+
+    def _local_request(self) -> bool:
+        hosts = self.headers.get_all("Host", [])
+        return (len(hosts) == 1 and hosts[0].lower() in LOCAL_HOSTS
+                and self._origin_allowed() and same_user_tcp_peer(self.connection))
+
+    def _api_request(self) -> bool:
+        return self.headers.get_all(REQUEST_HEADER, []) == ["1"]
+
+    def _deny(self) -> None:
+        self._json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "request_forbidden"})
 
     def _cors(self) -> None:
         origin = self.headers.get("Origin")
         if origin == EXTENSION_ORIGIN:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", f"Content-Type, {REQUEST_HEADER}")
         self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
     def _json(self, status: int, payload: Any) -> None:
         raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -943,8 +942,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def _read_json(self) -> dict[str, Any]:
+        if len(self.headers.get_all("Content-Length", [])) > 1 or self.headers.get("Transfer-Encoding"):
+            raise ValueError("invalid_payload_length")
         length = int(self.headers.get("Content-Length", "0"))
-        if length > 1_000_000:
+        if not 0 <= length <= 1_000_000:
             raise ValueError("payload_too_large")
         raw = self.rfile.read(length) if length else b"{}"
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
@@ -957,8 +958,8 @@ class Handler(BaseHTTPRequestHandler):
         return value
 
     def do_OPTIONS(self) -> None:  # noqa: N802
-        if not self._origin_allowed():
-            self._json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "origin_forbidden"})
+        if not self._local_request():
+            self._deny()
             return
         self.send_response(HTTPStatus.NO_CONTENT)
         self._cors()
@@ -966,17 +967,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         assert APP is not None
-        if not self._origin_allowed():
-            self._json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "origin_forbidden"})
+        if not self._local_request():
+            self._deny()
             return
         parsed = urlparse(self.path)
+        if parsed.path == "/api/health" and not self._api_request():
+            self._json(HTTPStatus.OK, {"ok": True})
+            return
+        if parsed.path.startswith("/api/") and not self._api_request():
+            self._deny()
+            return
         query = parse_qs(parsed.query)
         try:
-            ui_match = re.fullmatch(
-                r"/ui/prompt/(\d{6})/"
-                r"(copy|launch|bind|bind-chrome|bind-codex|chrome|codex|verify)",
-                parsed.path,
-            )
+            ui_match = PROMPT_UI_ROUTE.fullmatch(parsed.path)
             if parsed.path == "/ui/search":
                 self._html(HTTPStatus.OK, search_dashboard_html())
             elif parsed.path == "/ui/activity":
@@ -985,13 +988,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, APP.activity.snapshot())
             elif ui_match:
                 prompt_id, action = ui_match.groups()
-                result = run_prompt_fallback_action(prompt_id, action)
                 self._html(
                     HTTPStatus.OK,
-                    prompt_action_fallback_html(prompt_id, action, result),
+                    prompt_confirmation_html(prompt_id, action, PROMPT_CONFIRMATIONS.issue(prompt_id, action)),
                 )
             elif parsed.path == "/api/health":
                 self._json(HTTPStatus.OK, APP.health())
+            elif parsed.path == "/api/link/proposal":
+                self._json(HTTPStatus.OK, {"ok": True, "proposal": APP.clipboard_proposal()})
             elif parsed.path == "/api/context":
                 context_id = query.get("context_id", [""])[0]
                 context = APP.store.get_context(context_id)
@@ -1005,11 +1009,7 @@ class Handler(BaseHTTPRequestHandler):
                 prompt_id = query.get("prompt_id", [""])[0]
                 self._json(HTTPStatus.OK, APP.prompt_text(prompt_id))
             elif re.fullmatch(r"/api/verify/prompt/\d{6}", parsed.path):
-                from .verifier import verify_prompt
-                from .cli import request
-                prompt_id = parsed.path.rsplit("/", 1)[-1]
-                scope = query.get("scope", ["prompt"])[0]
-                self._json(HTTPStatus.OK, verify_prompt(prompt_id, request=request, full=scope == "prompt", scope=scope))
+                self._json(HTTPStatus.METHOD_NOT_ALLOWED, {"ok": False, "error": "post_required"})
             elif parsed.path == "/api/prompts":
                 self._json(HTTPStatus.OK, {"ok": True, "bindings": APP.store.list_prompt_bindings()})
             elif parsed.path == "/api/gnome-runtime":
@@ -1031,13 +1031,35 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         assert APP is not None
-        if not self._origin_allowed():
-            self._json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "origin_forbidden"})
+        if not self._local_request():
+            self._deny()
             return
         parsed = urlparse(self.path)
+        ui_match = PROMPT_UI_ROUTE.fullmatch(parsed.path)
+        if ui_match:
+            if self.headers.get("Origin") != "http://" + self.headers["Host"].lower():
+                self._deny()
+                return
+        elif not self._api_request():
+            self._deny()
+            return
         try:
             payload = self._read_json()
-            if parsed.path == "/api/context":
+            if ui_match:
+                prompt_id, action = ui_match.groups()
+                grant = payload.get("grant")
+                if not isinstance(grant, str) or not PROMPT_CONFIRMATIONS.consume(grant, prompt_id, action):
+                    self._deny()
+                    return
+                result = run_prompt_fallback_action(prompt_id, action)
+                self._html(HTTPStatus.OK, prompt_action_fallback_html(prompt_id, action, result))
+            elif re.fullmatch(r"/api/verify/prompt/\d{6}", parsed.path):
+                from .verifier import verify_prompt
+                from .cli import request
+                prompt_id = parsed.path.rsplit("/", 1)[-1]
+                scope = payload.get("scope", "prompt")
+                self._json(HTTPStatus.OK, verify_prompt(prompt_id, request=request, full=scope == "prompt", scope=scope))
+            elif parsed.path == "/api/context":
                 self._json(HTTPStatus.OK, {"ok": True, "context": APP.upsert_context(payload)})
             elif parsed.path == "/api/activity/web":
                 self._json(HTTPStatus.OK, APP.activity.observe_web(payload))
@@ -1065,6 +1087,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, APP.arm_link(payload))
             elif parsed.path == "/api/switch-from-chrome":
                 self._json(HTTPStatus.OK, APP.switch_from_chrome(payload))
+            elif parsed.path == "/api/link/confirm":
+                proposal_id = payload.get("proposal_id")
+                if not isinstance(proposal_id, str):
+                    raise ValueError("confirmation_id_required")
+                self._json(HTTPStatus.OK, APP.confirm_clipboard_proposal(proposal_id))
             elif parsed.path == "/api/clipboard":
                 text = payload.get("text")
                 if text is None:
@@ -1110,6 +1137,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve() -> None:
     global APP
+    if HOST not in {"127.0.0.1", "localhost"}:
+        raise ValueError("Chrome Codex Switcher must bind to IPv4 loopback")
     APP = App()
     APP.start_clipboard_watch()
     APP.start_active_thread_watch()

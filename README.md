@@ -8,7 +8,7 @@ Fedora/Wayland workflow helper for pairing a specific Chrome tab with a specific
 - Pairs one Chrome tab-context with one `codex://threads/...` Codex thread.
 - Optionally binds that pair to an explicit six-digit roadmap `PROMPT_ID`; this canonical binding is never inferred from URLs, tab titles or Codex deep links. Separately, CSS indexes standalone six-digit IDs visible in each page as searchable context metadata.
 - Chrome → Codex: one extension shortcut opens the exact paired Codex thread with `gio open`.
-- Codex → Chrome: press Codex Desktop's **Copy chat deep link** shortcut; on GNOME Wayland the GNOME companion observes the clipboard change inside the compositor and forwards the `codex://threads/...` value to the daemon, which focuses the exact paired Chrome tab.
+- Codex → Chrome: copy the chat deep link in Codex Desktop, then confirm the proposed destination in the Chrome side panel.
 - Persists the full floating-note state in SQLite: text, position, size, collapsed/hidden state, and pairings. Canonical page URL is used as a fallback, so refreshing or reopening the same Chrome page restores the existing note and layout instead of creating an empty/default one.
 - Shows the floating note only in Chrome. Desktop chat overlays are removed; exact thread identity still gates pairing and context actions.
 - Lets the note be edited in Chrome and preserves existing shared or independent Chrome/Codex note values in SQLite. Retained desktop-note data does not imply a rendered Codex overlay.
@@ -95,7 +95,7 @@ context-twin status
 1. In Chrome Y, press **Alt+Shift+K** or click **❓** in the floating note.
 2. Switch to Codex X.
 3. In Codex Desktop press **Copy chat deep link** (`Ctrl+Alt+L` on the current Linux build).
-4. The daemon stores the pair.
+4. Open the Chrome side panel, review the Chrome destination and Codex thread, then confirm the pair.
 
 ### Chrome → Codex
 
@@ -103,11 +103,11 @@ While Chrome Y is active, press **Alt+Shift+G** or click **🔗**.
 
 ### Codex → Chrome
 
-While Codex X is active, press Codex's **Copy chat deep link** shortcut. When auto-switch is enabled (default), the active clipboard backend resolves X and asks the extension to focus Chrome Y.
+While Codex X is active, press Codex's **Copy chat deep link** shortcut. When clipboard proposals are enabled (the default), the side panel offers the exact paired Chrome destination. Confirm it to focus Chrome Y.
 
 On GNOME Wayland this does **not** depend on `wl-paste --watch`: the GNOME Shell companion listens to the compositor's clipboard ownership change signal and reads the clipboard through GNOME Shell itself.
 
-Copying a Codex deep link intentionally acts as “switch to twin” outside pairing mode. This can be disabled from the API/CLI later if desired.
+The existing `auto_switch_on_codex_copy` setting controls proposals outside pairing mode.
 
 ### Search dashboard
 
@@ -124,7 +124,7 @@ Start typing immediately to filter by note text, canonical/page-detected `PROMPT
 
 ### Floating note
 
-The Chrome floating note remains editable, draggable, resizable and hideable. Notes persist per tab-context and remain searchable. Existing shared/independent Chrome and Codex note data is preserved; no floating note is rendered on Codex or ChatGPT Desktop. The overlay contains only the editable note and a blank drag bar with right-aligned buttons: **❓ ❌** when unlinked, or **🔗 🗑 ❌** when linked. **❓** starts pairing, **🔗** opens the paired chat, **🗑** unlinks it, and **❌** hides the overlay. Unlink preserves both note texts and the existing separate-note mode. Each icon has a descriptive tooltip and keyboard-accessible label. Stored collapse preferences are ignored without deleting them; notes always remain editable when shown. The bar has no title, status, thread ID, grip, minimize button or footer, and the note has no placeholder.
+The floating Chrome controls remain draggable, resizable and hideable. **Apri nota privata** opens the context's editor in a separate extension tab. Use **Salva** to persist changes. The editor warns before leaving with unsaved changes. Notes remain searchable and existing shared and independent Chrome/Codex values are preserved. The floating controls show **❓ ❌** when unlinked and **🔗 🗑 ❌** when linked. **❓** starts pairing, **🔗** opens the paired chat, **🗑** unlinks it while preserving both notes, and **❌** hides the controls. Stored collapse preferences remain intact.
 
 ### Pn prompt cards
 
@@ -175,13 +175,11 @@ thread, waits for the GNOME companion heartbeat, exercises shared-note
 propagation in both directions with automatic snapshot/restore, checks overlay
 invalidation/recovery, and verifies Chrome focus acknowledgement.
 
-If the Chrome context is missing, the verifier asks the extension to create a
-fresh canonical ChatGPT context rather than guessing among existing tabs. If the
-Codex thread is missing, it may pair the one unique recent native Codex session
-that explicitly contains the same six-digit PROMPT_ID; ambiguous matches fail
-closed.
+Missing explicit bindings stop verification. A matching recent native session
+can be shown as a proposal during binding recovery. The side panel requires
+confirmation before it saves the pair.
 
-`GET /api/verify/prompt/947306` runs the full verifier and returns JSON
+`POST /api/verify/prompt/947306` runs the full verifier and returns JSON
 `result: PASS|BLOCKED`, granular `gates`, and a concrete `blocker` on failure.
 The focused CLI commands reuse the same gates (`verify-note` exercises the
 bidirectional note snapshot/restore; `verify-overlay` reads the currently
@@ -220,12 +218,17 @@ PYTHONPATH=host python3 -m unittest discover -s tests -v
 python3 -m py_compile host/chrome_codex_switcher/*.py
 ```
 
-CI also runs real-browser end-to-end persistence tests with Chrome for Testing plus the unpacked extension. They also check the minimal overlay, exact button ordering, keyboard activation, blank-header dragging, small viewports, legacy collapse preferences and unlink preservation of separate notes. They verify the complete floating-note state after both a page refresh and closing/reopening the tab: text, X/Y position, width, height and hidden state.
+CI also runs real-browser end-to-end persistence tests with Chrome for Testing plus the unpacked extension. They also check the minimal overlay, exact button ordering, keyboard activation, blank-header dragging, small viewports, legacy collapse preferences and unlink preservation of separate notes. They verify editing and persistence in the private extension tab and the floating controls’ position, size and hidden state after refresh and reopening.
 
 
 ## Workflowy roadmap cockpit
 
 The localhost API supports explicit roadmap bindings and desktop-first launch:
+
+Local HTTP requests must come from an IPv4 loopback socket owned by the daemon's
+Linux user. API clients send `X-CCS-Request: 1`. An unmarked health request
+returns only readiness. Direct browser visits to prompt action links show a
+confirmation page before any action runs.
 
 - `GET /api/prompt?prompt_id=514458` returns the current Chrome/Codex binding.
 - `POST /api/prompt/bind` binds a known Chrome context to that exact PROMPT_ID.

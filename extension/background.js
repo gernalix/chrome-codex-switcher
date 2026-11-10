@@ -77,7 +77,9 @@ async function api(path, options = {}) {
   try {
     const response = await fetch(`${BASE}${path}`, {
       method: options.method || "GET",
-      headers: options.body ? {"Content-Type": "application/json"} : undefined,
+      headers: {"X-CCS-Request": "1", ...(options.body ? {"Content-Type": "application/json"} : {})},
+      redirect: "error",
+      credentials: "omit",
       body: options.body ? JSON.stringify(options.body) : undefined,
       signal: controller.signal
     });
@@ -390,23 +392,8 @@ async function switchCurrent() {
 }
 
 async function focusContext(payload, preferredWindowId = null) {
-  const map = await readTabMap();
-  let target = null;
-  for (const [tabId, value] of Object.entries(map)) {
-    if (value.contextId !== payload.context_id) continue;
-    try {
-      const tab = await chrome.tabs.get(Number(tabId));
-      if (tab && canonicalUrl(tab.url || "") === canonicalUrl(payload.url)) { target = tab; break; }
-    } catch {}
-  }
-
-  if (!target) {
-    const tabs = await chrome.tabs.query({});
-    const wanted = canonicalUrl(payload.url);
-    const matches = tabs.filter(tab => canonicalUrl(tab.url || "") === wanted);
-    matches.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
-    target = matches[0] || null;
-  }
+  const expectedUrl = canonicalUrl(payload.url);
+  let target = await findContextTab(payload);
 
   if (!target) {
     target = await chrome.tabs.create({
@@ -414,16 +401,33 @@ async function focusContext(payload, preferredWindowId = null) {
       active: false,
       ...(preferredWindowId != null ? {windowId: preferredWindowId} : {})
     });
+    // Chrome can return before its newly created tab has committed the URL.
+    const deadline = Date.now() + 5000;
+    while (target.pendingUrl || !target.url || target.url === "about:blank") {
+      if (Date.now() >= deadline || (target.pendingUrl && canonicalUrl(target.pendingUrl) !== expectedUrl)) {
+        throw new Error("context_tab_changed");
+      }
+      await new Promise(resolve => setTimeout(resolve, 50));
+      target = await chrome.tabs.get(target.id);
+    }
   } else if (preferredWindowId != null && target.windowId !== preferredWindowId) {
     try {
       target = await chrome.tabs.move(target.id, {windowId: preferredWindowId, index: -1});
     } catch {}
   }
 
-  map[String(target.id)] = {contextId: payload.context_id, url: canonicalUrl(payload.url), lastSeen: Date.now()};
+  if (target.pendingUrl || canonicalUrl(target.url) !== expectedUrl) throw new Error("context_tab_changed");
+  const map = await readTabMap();
+  map[String(target.id)] = {contextId: payload.context_id, url: expectedUrl, lastSeen: Date.now()};
   await writeTabMap(map);
+  const current = await chrome.tabs.get(target.id);
+  if (!current || current.pendingUrl || canonicalUrl(current.url) !== expectedUrl) {
+    throw new Error("context_tab_changed");
+  }
+  const finalMap = await readTabMap();
+  if (finalMap[String(target.id)]?.contextId !== payload.context_id) throw new Error("context_tab_changed");
   await chrome.tabs.update(target.id, {active: true});
-  if (target.windowId != null) await chrome.windows.update(target.windowId, {focused: true});
+  if (current.windowId != null) await chrome.windows.update(current.windowId, {focused: true});
 }
 
 
@@ -490,18 +494,18 @@ async function launchPrompt(promptId, _sourceTab) {
 
 async function findContextTab(payload) {
   const map = await readTabMap();
+  const matches = [];
   for (const [tabId, value] of Object.entries(map)) {
     if (value.contextId !== payload.context_id) continue;
     try {
       const tab = await chrome.tabs.get(Number(tabId));
-      const current = canonicalUrl(tab?.url || tab?.pendingUrl || "");
-      const saved = canonicalUrl(value.url || payload.url || "");
-      const openedChat = saved === "https://chatgpt.com/" && /^https:\/\/chatgpt\.com\/(?:c\/|g\/)/.test(current);
-      if (tab && (current === saved || openedChat)) return tab;
+      if (tab && !tab.pendingUrl && canonicalUrl(tab.url || "") === canonicalUrl(payload.url || "")) matches.push(tab);
     } catch {}
   }
-  return null;
+  if (matches.length > 1) throw new Error("ambiguous_context_tabs");
+  return matches[0] || null;
 }
+
 
 async function controlChrome(payload) {
   const action = payload.action || "probe";
@@ -595,7 +599,11 @@ async function closeBlurredDashboard(payload) {
 async function processEvent(event) {
   if (event.type === "dashboard_blur") {
     await closeBlurredDashboard(event.payload);
+  } else if (event.type === "clipboard_confirmation_required") {
+    await chrome.action.setBadgeText({text: "?"});
   } else if (event.type === "focus_chrome") {
+    const age = Date.now() / 1000 - Number(event.payload.issued_at);
+    if (!Number.isFinite(age) || age < -1 || age > 10) return;
     await focusContext(event.payload);
   } else if (event.type === "control_chrome") {
     let result;
@@ -730,10 +738,37 @@ chrome.commands.onCommand.addListener(async command => {
   }
 });
 
+function overlayContext(context) {
+  if (!context) return null;
+  const {id, geometry, hidden, collapsed, title, notes_independent, twin} = context;
+  return {id, geometry, hidden, collapsed, title, notes_independent,
+    twin: twin ? {codex_thread: twin.codex_thread} : null};
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     try {
-      if (message.type === "activity:state") {
+      const editorUrl = chrome.runtime.getURL("note.html");
+      const fromEditor = canonicalUrl(sender.url) === editorUrl;
+      const fromPanel = sender.url === chrome.runtime.getURL("sidepanel.html");
+      if (["context:note", "context:note-mode", "side:list"].includes(message.type)
+          && !fromPanel && !fromEditor) {
+        sendResponse({ok: false, error: "trusted_note_surface_required"});
+        return;
+      }
+      if (message.type === "side:clipboard-proposal" || message.type === "side:clipboard-confirm") {
+        if (sender.url !== chrome.runtime.getURL("sidepanel.html")) {
+          sendResponse({ok: false, error: "trusted_confirmation_surface_required"});
+          return;
+        }
+        const confirmation = message.type === "side:clipboard-proposal"
+          ? await api("/api/link/proposal")
+          : await api("/api/link/confirm", {method: "POST", body: {proposal_id: message.proposalId}});
+        if (message.type === "side:clipboard-confirm" && confirmation?.ok) {
+          await chrome.action.setBadgeText({text: ""});
+        }
+        sendResponse(confirmation);
+      } else if (message.type === "activity:state") {
         if (!sender.tab?.id || !isPromptChatTab(sender.tab)) {
           sendResponse({ok: false, error: "not_chat_tab"});
           return;
@@ -750,9 +785,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }}));
       } else if (message.type === "context:get") {
         const tab = sender.tab || await currentTab();
-        sendResponse({ok: true, context: await ensureContext(tab)});
+        sendResponse({ok: true, context: overlayContext(await ensureContext(tab))});
       } else if (message.type === "context:read") {
-        sendResponse(await api(`/api/context?context_id=${encodeURIComponent(message.contextId)}`));
+        const result = await api(`/api/context?context_id=${encodeURIComponent(message.contextId)}`);
+        sendResponse(fromEditor || fromPanel ? result : {...result, context: overlayContext(result.context)});
+      } else if (message.type === "context:open-note") {
+        const tab = sender.tab;
+        const record = tab?.id && (await readTabMap())[String(tab.id)];
+        if (sender.frameId !== 0 || !record || record.contextId !== message.contextId
+            || tab.pendingUrl || canonicalUrl(sender.url) !== record.url
+            || canonicalUrl(tab.url) !== record.url) {
+          sendResponse({ok: false, error: "context_tab_changed"});
+          return;
+        }
+        await chrome.tabs.create({url: editorUrl + "#" + encodeURIComponent(record.contextId), windowId: tab.windowId});
+        sendResponse({ok: true});
       } else if (message.type === "pn:manual") {
         sendResponse(await api("/api/pn/manual", {method: "POST", body: message.values}));
       } else if (message.type === "context:note") {
@@ -820,7 +867,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else if (message.type === "prompt:codex") {
         sendResponse(await openPromptCodex(message.promptId));
       } else if (message.type === "prompt:verify") {
-        sendResponse(await api(`/api/verify/prompt/${encodeURIComponent(message.promptId)}`, {timeoutMs: 90000}));
+        sendResponse(await api(`/api/verify/prompt/${encodeURIComponent(message.promptId)}`, {method: "POST", body: {}, timeoutMs: 90000}));
       } else {
         sendResponse({ok: false, error: "unknown_message"});
       }

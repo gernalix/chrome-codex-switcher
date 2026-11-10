@@ -1,5 +1,4 @@
 const DAEMON_BASE = 'http://127.0.0.1:43817';
-const DAEMON_CLIPBOARD_URL = `${DAEMON_BASE}/api/clipboard`;
 const SOURCE_VERSION = 10;
 const CODEX_DESKTOP_APP_IDS = new Set([
     'chatgpt.desktop',
@@ -45,7 +44,6 @@ function isCodexLink(text) {
 
 class ChromeCodexSwitcherBridge {
     enable() {
-        this._lastFocusRequest = null;
         this._lastRuntimeSignature = null;
         this._lastRuntimeReportAt = 0;
         this._runtimeReportInFlight = false;
@@ -56,7 +54,10 @@ class ChromeCodexSwitcherBridge {
         this._selection = global.display.get_selection();
         this._selectionChangedId = this._selection.connect('owner-changed', (_selection, type) => {
             if (type !== Meta.SelectionType.CLIPBOARD) return;
+            const sourceWindow = global.display.focus_window;
+            if (!isChatGptDesktopWindow(sourceWindow)) return;
             this._clipboard.get_text(St.ClipboardType.CLIPBOARD, (_clipboard, text) => {
+                if (global.display.focus_window !== sourceWindow || !isChatGptDesktopWindow(sourceWindow)) return;
                 const value = (text || '').trim();
                 if (isCodexLink(value)) this._forwardCodexLink(value);
             });
@@ -104,6 +105,7 @@ class ChromeCodexSwitcherBridge {
         try {
             const encoded = Soup.form_encode_hash(payload);
             const message = Soup.Message.new_from_encoded_form('POST', DAEMON_BASE + path, encoded);
+            message.get_request_headers().append('X-CCS-Request', '1');
             this._http.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null, (session, result) => {
                 try {
                     session.send_and_read_finish(result);
@@ -119,19 +121,7 @@ class ChromeCodexSwitcherBridge {
     }
 
     _forwardCodexLink(text) {
-        try {
-            const url = `${DAEMON_CLIPBOARD_URL}?text=${encodeURIComponent(text)}`;
-            const message = Soup.Message.new('POST', url);
-            this._http.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null, (session, result) => {
-                try {
-                    session.send_and_read_finish(result);
-                } catch (error) {
-                    console.debug(`chrome-codex-switcher: clipboard bridge unavailable: ${error}`);
-                }
-            });
-        } catch (error) {
-            console.debug(`chrome-codex-switcher: clipboard bridge failed: ${error}`);
-        }
+        this._postForm('/api/clipboard', {text});
     }
 
     _reportRuntime(state, focusedCodex, visible, identity = {}) {
@@ -169,32 +159,11 @@ class ChromeCodexSwitcherBridge {
     }
 
     _refresh() {
-        this._focusRequestedChrome();
         const identity = desktopWindowIdentity(global.display.focus_window);
         this._reportRuntime(null, identity.matches, false, identity);
     }
 
-    _focusRequestedChrome() {
-        const path = GLib.build_filenamev([GLib.get_user_cache_dir(), 'chrome-codex-switcher', 'focus_request.json']);
-        try {
-            const [ok, bytes] = GLib.file_get_contents(path);
-            if (!ok) return;
-            const request = JSON.parse(new TextDecoder().decode(bytes));
-            if (request.id === this._lastFocusRequest || Date.now() / 1000 - request.issued_at > 10) return;
-            const title = String(request.title || '').toLowerCase();
-            if (!title) return;
-            const windows = global.get_window_actors().map(actor => actor.meta_window).filter(win => {
-                const app = [win.get_sandboxed_app_id?.(), win.get_wm_class?.(), win.get_wm_class_instance?.()]
-                    .join(' ').toLowerCase();
-                return app.includes('chrome');
-            });
-            const win = windows.find(win => String(win.get_title() || '').toLowerCase().includes(title))
-                || (windows.length === 1 ? windows[0] : null);
-            if (!win) return;
-            if (global.display.focus_window !== win) Main.activateWindow(win);
-            if (global.display.focus_window === win) this._lastFocusRequest = request.id;
-        } catch (_) {}
-    }
+
 }
 
 // Previously loaded GNOME loaders return this symbol until the next session.
