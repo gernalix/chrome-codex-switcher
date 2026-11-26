@@ -124,7 +124,7 @@ Start typing immediately to filter by note text, canonical/page-detected `PROMPT
 
 ### Floating note
 
-The floating Chrome controls remain draggable, resizable and hideable. **Apri nota privata** opens the context's editor in a separate extension tab. Use **Salva** to persist changes. The editor warns before leaving with unsaved changes. Notes remain searchable and existing shared and independent Chrome/Codex values are preserved. The floating controls show **❓ ❌** when unlinked and **🔗 🗑 ❌** when linked. **❓** starts pairing, **🔗** opens the paired chat, **🗑** unlinks it while preserving both notes, and **❌** hides the controls. Stored collapse preferences remain intact.
+The floating Chrome controls remain draggable, resizable and hideable. The private note is edited inline inside an extension-origin iframe and saved automatically. The page cannot read the editor contents; the background grants access only to the exact current tab/context and frame document. Notes remain searchable and existing shared and independent Chrome/Codex values are preserved. The floating controls show **❓ ❌** when unlinked and **🔗 🗑 ❌** when linked. **❓** starts pairing, **🔗** opens the paired chat, **🗑** unlinks it while preserving both notes, and **❌** hides overlays for the entire registrable domain (all subdomains and current/future tabs), durably in SQLite; existing per-context hidden settings are preserved until the first explicit domain preference. Use **Alt+Shift+V** to restore or hide the overlays of that domain. Stored collapse preferences remain intact.
 
 ### Pn prompt cards
 
@@ -138,7 +138,7 @@ Use **Integra dati manualmente** to persist a plain-language summary, practical 
 
 Canonical link synchronization still requires a note first line **exactly** `Pn`. Lowercase `p58` is recognized for display but is not sync-ready. An inline title does not change this contract: **Copia nota compatibile** previews/copies `Pn\nTitle\n…` for user review, preserving the stored note. Paste/save it explicitly to opt into synchronization. The existing debounced `pn-links-changed` marker remains unchanged.
 
-Use **Alt+Shift+V** to show/hide the note in the active Chrome tab.
+Use **Alt+Shift+V** to show/hide overlays for the active tab's domain.
 
 Browser agents can press **Alt+Shift+H** before interacting with a page and again
 afterwards to temporarily hide/restore only that tab’s overlay. Other tabs are unaffected. This page-level shortcut

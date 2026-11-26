@@ -34,6 +34,8 @@ architecture:
 dependencies:
 - name: Python standard library and system SQLite
   purpose: Offline policy, data and fixture verification.
+- name: libpsl.so.5
+  purpose: Resolve registrable domains for per-site overlay visibility, including private suffixes.
 - name: Bubblewrap
   purpose: Read-only source with private temporary home/runtime/data, isolated processes
     and network.

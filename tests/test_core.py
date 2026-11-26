@@ -395,6 +395,23 @@ class AppTests(unittest.TestCase):
         self.assertTrue(reopened["collapsed"])
         self.assertIsNone(self.store.get_context("ctx-new-tab"))
 
+    def test_overlay_visibility_follows_domain_without_merging_notes(self):
+        self.app.upsert_context({"context_id": "ctx-a", "url": "https://one.example.com/A", "title": "A"})
+        self.app.upsert_context({"context_id": "ctx-b", "url": "https://two.example.com/B", "title": "B"})
+        self.app.upsert_context({"context_id": "ctx-c", "url": "https://another.net/C", "title": "C"})
+        self.app.set_note({"context_id": "ctx-a", "note": "note A", "surface": "chrome"})
+        self.app.set_note({"context_id": "ctx-b", "note": "note B", "surface": "chrome"})
+
+        self.assertTrue(self.app.set_ui({"context_id": "ctx-a", "domain_hidden": True})["ok"])
+
+        self.assertTrue(self.store.get_context("ctx-b")["domain_hidden"])
+        self.assertIsNone(self.store.get_context("ctx-c")["domain_hidden"])
+        self.assertEqual("note B", self.store.get_context("ctx-b")["note"])
+        self.assertEqual("note A", self.store.get_context("ctx-a")["note"])
+
+        self.assertTrue(self.app.set_ui({"context_id": "ctx-b", "domain_hidden": False})["ok"])
+        self.assertFalse(self.store.get_context("ctx-a")["domain_hidden"])
+
     def test_note_survives_store_reopen(self):
         path = self.store.path
         self.app.upsert_context({"context_id": "ctx-reopen", "url": "https://chatgpt.com/c/reopen"})

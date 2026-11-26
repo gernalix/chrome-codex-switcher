@@ -7,6 +7,66 @@ let eventSeq = 0;
 let promptCaptureBusy = false;
 let bridgeWasOnline = false;
 const lifecyclePorts = new Set();
+const inlineQueues = new Map();
+
+async function boundTab(sender, contextId) {
+  const tab = sender.tab;
+  if (!tab?.id || tab.pendingUrl) return null;
+  const record = (await readTabMap())[String(tab.id)];
+  if (!record || record.contextId !== contextId || canonicalUrl(tab.url) !== record.url) return null;
+  const live = await chrome.tabs.get(tab.id);
+  if (live.pendingUrl || canonicalUrl(live.url) !== record.url) return null;
+  return record;
+}
+
+async function inlineGrant(sender, contextId) {
+  if (sender.frameId !== 0 || !sender.documentId) return null;
+  const record = await boundTab(sender, contextId);
+  if (!record || canonicalUrl(sender.url) !== record.url) return null;
+  const key = "inline-note:" + sender.tab.id;
+  let grant = (await chrome.storage.session.get(key))[key];
+  if (!grant || grant.contextId !== contextId || grant.url !== record.url
+      || grant.parentDocument !== sender.documentId) {
+    grant = {token: crypto.randomUUID(), contextId, url: record.url,
+      parentDocument: sender.documentId};
+    await chrome.storage.session.set({[key]: grant});
+  }
+  return grant.token;
+}
+
+function inlineRequest(message, sender) {
+  const key = "inline-note:" + sender.tab?.id;
+  const previous = inlineQueues.get(key) || Promise.resolve();
+  const task = previous.catch(() => {}).then(async () => {
+    const grant = (await chrome.storage.session.get(key))[key];
+    if (!grant || !sender.tab?.id || !(sender.frameId > 0) || !sender.documentId
+        || canonicalUrl(sender.url) !== chrome.runtime.getURL("inline-note.html")
+        || (sender.origin && sender.origin !== chrome.runtime.getURL("").slice(0,-1))
+        || message.token !== grant.token
+        || (grant.frameDocument && grant.frameDocument !== sender.documentId)
+        || !(await boundTab(sender, grant.contextId))) {
+      return {ok: false, error: "inline_note_scope_changed"};
+    }
+    if (message.type === "inline:load") {
+      if (!grant.frameDocument) {
+        grant.frameDocument = sender.documentId;
+        await chrome.storage.session.set({[key]: grant});
+      }
+      const result = await api("/api/context?context_id=" + encodeURIComponent(grant.contextId));
+      if (!result?.ok || result.context?.id !== grant.contextId) return {ok:false, error:"context_missing"};
+      return {ok:true, note:result.context.note || ""};
+    }
+    if (message.type !== "inline:save" || grant.frameDocument !== sender.documentId
+        || typeof message.note !== "string") return {ok:false, error:"inline_note_write_denied"};
+    const result = await api("/api/note", {method:"POST", body:{
+      context_id:grant.contextId, note:message.note, surface:"chrome"
+    }});
+    return {ok:!!result?.ok};
+  });
+  inlineQueues.set(key, task);
+  task.finally(() => { if (inlineQueues.get(key) === task) inlineQueues.delete(key); }).catch(() => {});
+  return task;
+}
 
 function isSupportedPageUrl(raw) {
   try {
@@ -640,6 +700,14 @@ async function processEvent(event) {
       } catch {}
     }
     await writeTabMap(map);
+  } else if (event.type === "overlay_visibility_changed") {
+    // Refresh open HTTP(S) contexts; the store decides which domain is affected.
+    // No note or domain choice is exposed to the page itself.
+    for (const tab of await chrome.tabs.query({})) {
+      if (isSupportedPageUrl(tab.url)) {
+        try { await chrome.tabs.sendMessage(tab.id, {type:"refreshContext"}, {frameId:0}); } catch {}
+      }
+    }
   } else if (["linked", "unlinked", "note_changed", "note_mode_changed"].includes(event.type)) {
     const tabs = await chrome.tabs.query({});
     const map = await readTabMap();
@@ -699,6 +767,7 @@ chrome.alarms.onAlarm.addListener(alarm => {
 });
 
 chrome.tabs.onRemoved.addListener(tabId => {
+  chrome.storage.session.remove("inline-note:" + tabId).catch(() => {});
   api("/api/activity/web-remove", {method: "POST", body: {tab_id: tabId}}).catch(() => {});
 });
 
@@ -740,14 +809,19 @@ chrome.commands.onCommand.addListener(async command => {
 
 function overlayContext(context) {
   if (!context) return null;
-  const {id, geometry, hidden, collapsed, title, notes_independent, twin} = context;
-  return {id, geometry, hidden, collapsed, title, notes_independent,
+  const {id, geometry, hidden, domain_hidden, collapsed, title, notes_independent, twin} = context;
+  return {id, geometry, hidden: domain_hidden ?? hidden, collapsed, title, notes_independent,
     twin: twin ? {codex_thread: twin.codex_thread} : null};
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     try {
+      if (canonicalUrl(sender.url) === chrome.runtime.getURL("inline-note.html")
+          || String(message.type).startsWith("inline:")) {
+        sendResponse(await inlineRequest(message, sender));
+        return;
+      }
       const editorUrl = chrome.runtime.getURL("note.html");
       const fromEditor = canonicalUrl(sender.url) === editorUrl;
       const fromPanel = sender.url === chrome.runtime.getURL("sidepanel.html");
@@ -785,7 +859,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }}));
       } else if (message.type === "context:get") {
         const tab = sender.tab || await currentTab();
-        sendResponse({ok: true, context: overlayContext(await ensureContext(tab))});
+        const current = await ensureContext(tab);
+        const context = overlayContext(current);
+        const token = context && await inlineGrant(sender, context.id);
+        sendResponse({ok:true, context:context && {...context, editorToken:token}});
       } else if (message.type === "context:read") {
         const result = await api(`/api/context?context_id=${encodeURIComponent(message.contextId)}`);
         sendResponse(fromEditor || fromPanel ? result : {...result, context: overlayContext(result.context)});
@@ -816,7 +893,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           note: message.note
         }}));
       } else if (message.type === "context:ui") {
-        sendResponse(await api("/api/ui", {method: "POST", body: {context_id: message.contextId, ...message.ui}}));
+        if (sender.frameId !== 0 || !(await boundTab(sender, message.contextId))
+            || canonicalUrl(sender.url) !== canonicalUrl(sender.tab.url)) {
+          sendResponse({ok:false, error:"context_tab_changed"});
+          return;
+        }
+        const result = await api("/api/ui", {method:"POST", body:{context_id:message.contextId, ...message.ui}});
+        sendResponse({ok:!!result?.ok, context:overlayContext(result?.context)});
       } else if (message.type === "context:prompt-scan") {
         sendResponse(await api("/api/context/prompts/observe", {method: "POST", body: {
           context_id: message.contextId,

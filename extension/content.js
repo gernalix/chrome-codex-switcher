@@ -5,7 +5,7 @@
 
   const host = document.createElement("div");
   host.id = "chrome-codex-switcher-host";
-  host.style.cssText = "all:initial;position:fixed;z-index:2147483647;left:calc(100vw - 350px);top:84px;width:320px;height:200px;";
+  host.style.cssText = "all:initial;position:fixed;z-index:2147483647;left:calc(100vw - 350px);top:84px;width:320px;height:200px;display:none;";
   const shadow = host.attachShadow({mode: "closed"});
   document.documentElement.appendChild(host);
 
@@ -16,7 +16,7 @@
       .box{width:100%;height:100%;min-width:min(230px,100vw);min-height:min(100px,var(--available-height,100vh));max-width:100vw;max-height:var(--available-height,100vh);resize:both;overflow:hidden;background:#17181b;color:#f2f2f2;border:1px solid #4b4d55;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.36);font:13px/1.35 system-ui,sans-serif;display:flex;flex-direction:column}
       .head{display:flex;justify-content:flex-end;align-items:center;gap:3px;padding:2px 4px;background:#23252a;cursor:move;user-select:none;flex-shrink:0}
       .btn{appearance:none;border:0;border-radius:5px;background:#33363d;color:#eee;min-width:28px;min-height:28px;padding:2px 5px;cursor:pointer;font:inherit}.btn:hover{background:#464a53}.btn:focus-visible{outline:2px solid #a9c2ff;outline-offset:-2px}
-      .body{display:flex;flex:1;min-height:0;padding:4px}.note{width:100%;min-height:58px;flex:1;resize:none;border:1px solid #3e4148;border-radius:5px;background:#101114;color:#f4f4f4;padding:5px;font:13px/1.4 system-ui,sans-serif;outline:none}.note:focus{border-color:#777b87}
+      .body{display:flex;flex:1;min-height:0;padding:4px}.note{width:100%;min-height:58px;flex:1;resize:none;border:1px solid #3e4148;border-radius:5px;background:#101114;color:#f4f4f4;padding:0;font:13px/1.4 system-ui,sans-serif;outline:none}.note:focus{border-color:#777b87}
       .flash{position:absolute;left:4px;right:4px;bottom:4px;padding:6px;border-radius:5px;background:#363941;color:#fff;opacity:0;pointer-events:none;transition:opacity .15s}.flash.show{opacity:1}
     </style>
     <div class="box">
@@ -24,9 +24,9 @@
         <button class="btn link" title="Collega chat Codex" aria-label="Collega chat Codex">❓</button>
         <button class="btn switch" hidden title="Apri chat Codex collegata" aria-label="Apri chat Codex collegata">🔗</button>
         <button class="btn unlink" hidden title="Scollega Codex conservando le note" aria-label="Scollega Codex conservando le note">🗑</button>
-        <button class="btn close" title="Nascondi nota" aria-label="Nascondi nota">❌</button>
+        <button class="btn close" title="Nascondi overlay su tutto il dominio" aria-label="Nascondi overlay su tutto il dominio">❌</button>
       </div>
-      <div class="body"><button type="button" class="note" disabled>Apri nota privata</button></div>
+      <div class="body"><iframe class="note" title="Nota privata CCS"></iframe></div>
       <div class="flash" role="status" aria-live="polite"></div>
     </div>`;
 
@@ -34,6 +34,23 @@
   const note = shadow.querySelector(".note");
   const flashEl = shadow.querySelector(".flash");
   let context = null;
+  let editorToken = null;
+  let visibilityPending = null;
+  let refreshVersion = 0;
+
+  function clearEditor() {
+    note.removeAttribute("src");
+    editorToken = null;
+  }
+
+  function refreshEditor(token) {
+    if (token && editorToken !== token) {
+      editorToken = token;
+      note.src = chrome.runtime.getURL("inline-note.html") + "#" + token;
+    } else if (editorToken) {
+      note.contentWindow?.postMessage({type:"ccs:refresh-note"}, chrome.runtime.getURL("").slice(0,-1));
+    }
+  }
   let uiTimer = null;
   let pendingUi = {};
   let pendingGeometry = null;
@@ -371,9 +388,10 @@
     if (!next) return;
     if (pendingContextId === next.id) next = {...next, geometry: pendingGeometry, ...pendingUi};
     const contextChanged = promptScanContextId !== next.id;
+    if (visibilityPending?.contextId === next.id) next = {...next, hidden:visibilityPending.hidden};
     context = next;
-    note.disabled = false;
     if (contextChanged) {
+      clearEditor();
       promptScanContextId = next.id;
       promptIdsSeen.clear();
       pendingPromptIds.clear();
@@ -387,6 +405,7 @@
     // Old collapsed preferences remain stored, but no longer hide the editor.
     host.dataset.overlayUi = "minimal-v1";
     host.style.display = next.hidden ? "none" : "block";
+    if (!next.hidden) refreshEditor(next.editorToken);
     const g = next.geometry || {};
     if (Number.isFinite(g.x)) host.style.left = `${Math.max(0, g.x)}px`;
     if (Number.isFinite(g.y)) host.style.top = `${Math.max(0, g.y)}px`;
@@ -424,7 +443,10 @@
   }
 
   async function refresh() {
+    const version = ++refreshVersion;
+    const url = location.href;
     const result = await send({type: "context:get"});
+    if (version !== refreshVersion || url !== location.href) return false;
     if (result?.ok && result.context?.id) {
       refreshAttempts = 0;
       applyContext(result.context);
@@ -435,11 +457,32 @@
     return false;
   }
 
-  note.addEventListener("click", async event => {
-    if (!event.isTrusted || !context) return;
-    const result = await send({type: "context:open-note", contextId: context.id});
-    if (!result?.ok) flash("Impossibile aprire la nota: " + (result?.error || "daemon unavailable"), 3500);
-  });
+  async function setDomainVisibility(hidden) {
+    if (!context) return;
+    const contextId = context.id;
+    const savedGeometry = host.style.display === "none" ? context.geometry : geometry();
+    const request = {contextId, hidden};
+    visibilityPending = request;
+    host.style.display = hidden ? "none" : "block";
+    context = {...context, hidden};
+    clearTimeout(uiTimer);
+    pendingContextId = null;
+    pendingGeometry = null;
+    pendingUi = {};
+    const result = await send({type:"context:ui", contextId, ui:{
+      domain_hidden:hidden, ...(savedGeometry ? {geometry:savedGeometry} : {})
+    }});
+    if (visibilityPending !== request) return;
+    visibilityPending = null;
+    if (!result?.ok) {
+      // Do not pretend a failed persistence succeeded.
+      if (context?.id === contextId) {
+        host.style.display = "block";
+        flash("Preferenza dominio non salvata", 3500);
+      }
+    }
+    refresh().catch(() => {});
+  }
 
   shadow.querySelector(".unlink").addEventListener("click", async event => {
     if (!event.isTrusted || !context?.twin) return;
@@ -475,9 +518,7 @@
 
   shadow.querySelector(".close").addEventListener("click", event => {
     if (!event.isTrusted) return;
-    const savedGeometry = geometry();
-    host.style.display = "none";
-    saveUi({hidden: true}, savedGeometry);
+    setDomainVisibility(true);
   });
 
   let drag = null;
@@ -545,10 +586,7 @@
     }
     if (message.type === "notLinked") flash("This tab has no Codex twin yet");
     if (message.type === "toggleNote") {
-      const hidden = host.style.display === "none";
-      const savedGeometry = hidden ? null : geometry();
-      host.style.display = hidden ? "block" : "none";
-      saveUi({hidden: !hidden}, savedGeometry);
+      if (context) setDomainVisibility(!context.hidden);
     }
   });
 
@@ -628,7 +666,15 @@
 
   const urlWatchTimer = setInterval(() => {
     if (location.href !== lastUrl) {
+      const previous = new URL(lastUrl);
+      const next = new URL(location.href);
+      previous.hash = next.hash = "";
       lastUrl = location.href;
+      if (previous.href !== next.href) {
+        context = null;
+        clearEditor();
+        host.style.display = "none";
+      }
       refresh().catch(() => {});
     }
   }, 750);

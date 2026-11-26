@@ -599,7 +599,10 @@ class App(ContextBindingsMixin, ClipboardBindingMixin):
             geometry=payload.get("geometry"),
             hidden=payload.get("hidden") if "hidden" in payload else None,
             collapsed=payload.get("collapsed") if "collapsed" in payload else None,
+            domain_hidden=payload.get("domain_hidden"),
         )
+        if context and payload.get("domain_hidden") is not None:
+            self.broker.emit("overlay_visibility_changed", {"domain": context["overlay_domain"]})
         return {"ok": bool(context), "context": context}
 
     def unlink(self, context_id: str) -> dict[str, Any]:

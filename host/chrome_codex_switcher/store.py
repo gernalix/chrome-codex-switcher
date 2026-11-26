@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .util import now
+from .domain import overlay_domain
 
 PAIRING_INTENT_KEYS = ("pending_prompt", "pending_prompt_codex", "pending_link")
 
@@ -72,6 +73,11 @@ CREATE TABLE IF NOT EXISTS context_prompt_ids (
 );
 
 CREATE INDEX IF NOT EXISTS idx_context_prompt_ids_prompt ON context_prompt_ids(prompt_id);
+
+CREATE TABLE IF NOT EXISTS overlay_domain_visibility (
+    domain TEXT PRIMARY KEY,
+    hidden INTEGER NOT NULL CHECK(hidden IN (0,1))
+);
 
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -257,6 +263,12 @@ class Store:
             if context:
                 twin = db.execute("SELECT codex_thread,codex_deep_link FROM twins WHERE context_id=?", (context_id,)).fetchone()
                 context["twin"] = dict(twin) if twin else None
+                domain = overlay_domain(context["url"])
+                preference = db.execute(
+                    "SELECT hidden FROM overlay_domain_visibility WHERE domain=?", (domain,)
+                ).fetchone() if domain else None
+                context["overlay_domain"] = domain
+                context["domain_hidden"] = bool(preference["hidden"]) if preference else None
             return context
 
     def set_note(self, context_id: str, note: str, *, surface: str = "chrome") -> dict[str, Any] | None:
@@ -321,7 +333,7 @@ class Store:
                 )
         return self.get_context(context_id)
 
-    def set_ui(self, context_id: str, *, geometry: dict | None = None, hidden: bool | None = None, collapsed: bool | None = None) -> dict[str, Any] | None:
+    def set_ui(self, context_id: str, *, geometry: dict | None = None, hidden: bool | None = None, collapsed: bool | None = None, domain_hidden: bool | None = None) -> dict[str, Any] | None:
         pieces: list[str] = []
         values: list[Any] = []
         if geometry is not None:
@@ -333,12 +345,28 @@ class Store:
         if collapsed is not None:
             pieces.append("collapsed=?")
             values.append(int(collapsed))
+        if domain_hidden is not None:
+            if not isinstance(domain_hidden, bool):
+                raise ValueError("domain_hidden_must_be_boolean")
+            if hidden is None:
+                pieces.append("hidden=?")
+                values.append(int(domain_hidden))
         if not pieces:
             return self.get_context(context_id)
         pieces.append("updated_at=?")
         values.append(now())
         values.append(context_id)
         with self._connect() as db:
+            if domain_hidden is not None:
+                row = db.execute("SELECT url FROM contexts WHERE id=?", (context_id,)).fetchone()
+                domain = overlay_domain(row["url"]) if row else None
+                if not domain:
+                    return None
+                db.execute(
+                    "INSERT INTO overlay_domain_visibility(domain,hidden) VALUES(?,?) "
+                    "ON CONFLICT(domain) DO UPDATE SET hidden=excluded.hidden",
+                    (domain, int(domain_hidden)),
+                )
             db.execute(f"UPDATE contexts SET {', '.join(pieces)} WHERE id=?", values)
         return self.get_context(context_id)
 
