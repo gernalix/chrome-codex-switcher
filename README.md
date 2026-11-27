@@ -218,7 +218,13 @@ PYTHONPATH=host python3 -m unittest discover -s tests -v
 python3 -m py_compile host/chrome_codex_switcher/*.py
 ```
 
-CI also runs real-browser end-to-end persistence tests with Chrome for Testing plus the unpacked extension. They also check the minimal overlay, exact button ordering, keyboard activation, blank-header dragging, small viewports, legacy collapse preferences and unlink preservation of separate notes. They verify editing and persistence in the private extension tab and the floating controls’ position, size and hidden state after refresh and reopening.
+On Fedora x86_64, `tools/selenium_e2e.py` verifies FEU's flat Selenium test
+installation against Fedora Chromium. It extracts only the driver executable
+from the matching signed Fedora RPM and uses an isolated headless browser on
+a synthetic page. Add `--full` to run the persistence suite with the unpacked
+extension and a fresh profile. The local suite checks editing and persistence
+in the test extension tab and the floating control layout. The daemon's
+installed profile and notebook state are outside the fixture.
 
 
 ## Workflowy roadmap cockpit

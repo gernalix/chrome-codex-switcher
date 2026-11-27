@@ -10,7 +10,7 @@ scope:
   - Never focus real windows, synthesize keystrokes or read the live clipboard for
     source verification.
   - Historical prompt cards do not authorize restarting retired C2/C3 control planes.
-  - Browser-extension persistence E2E in CI is distinct from live GNOME/Wayland acceptance.
+  - The isolated browser persistence E2E is distinct from live GNOME/Wayland acceptance.
 repository:
   canonical_workdir: /home/daniele/projects/chrome-codex-switcher
   branch_policy: Use isolated task worktrees and the installed single writer; protect
@@ -39,6 +39,8 @@ dependencies:
 - name: Bubblewrap
   purpose: Read-only source with private temporary home/runtime/data, isolated processes
     and network.
+- name: Selenium and Fedora Chromium with its matching signed ChromeDriver
+  purpose: Optional local headless browser fixtures with a fresh profile. FEU owns the flat Python test target.
 - name: Node and GNOME/Chrome integration
   purpose: Actor-free JavaScript fixture verification locally; real desktop integration
     is separately accepted.
